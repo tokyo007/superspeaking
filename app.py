@@ -5,72 +5,77 @@ def test_speechsuper_formats():
         app_key = app.config['SPEECHSUPER_APP_KEY']
         secret_key = app.config['SPEECHSUPER_SECRET_KEY']
         
-        # Test different authentication formats
+        # Test the correct SpeechSuper format
         timestamp = str(int(time.time()))
-        connect_str = app_key + timestamp
         
-        # Generate signature
-        sig_str = app_key + timestamp + connect_str
-        sig_sha1 = hmac.new(secret_key.encode('utf-8'), sig_str.encode('utf-8'), hashlib.sha1).hexdigest()
-        signature = base64.b64encode(sig_sha1.encode('utf-8')).decode('utf-8')
+        # Generate signatures like the sample
+        connect_str = (app_key + timestamp + secret_key).encode("utf-8")
+        connect_sig = hashlib.sha1(connect_str).hexdigest()
         
-        # Create minimal test audio (1 second of silence)
-        import struct
-        sample_rate = 16000
-        num_samples = sample_rate * 1  # 1 second
+        user_id = "guest"
+        start_str = (app_key + timestamp + user_id + secret_key).encode("utf-8")
+        start_sig = hashlib.sha1(start_str).hexdigest()
         
-        # WAV header for 16kHz, 16-bit, mono
-        wav_header = struct.pack('<4sI4s4sIHHIIHH4sI',
-            b'RIFF', 36 + num_samples * 2, b'WAVE', b'fmt ', 16, 1, 1,
-            sample_rate, sample_rate * 2, 2, 16, b'data', num_samples * 2
-        )
-        audio_data = wav_header + b'\x00' * (num_samples * 2)
+        # Build JSON params like the sample
+        params = {
+            "connect": {
+                "cmd": "connect",
+                "param": {
+                    "sdk": {
+                        "version": 16777472,
+                        "source": 9,
+                        "protocol": 2
+                    },
+                    "app": {
+                        "applicationId": app_key,
+                        "sig": connect_sig,
+                        "timestamp": timestamp
+                    }
+                }
+            },
+            "start": {
+                "cmd": "start",
+                "param": {
+                    "app": {
+                        "userId": user_id,
+                        "applicationId": app_key,
+                        "timestamp": timestamp,
+                        "sig": start_sig
+                    },
+                    "audio": {
+                        "audioType": "wav",
+                        "channel": 1,
+                        "sampleBytes": 2,
+                        "sampleRate": 16000
+                    },
+                    "request": {
+                        "coreType": "sent.eval.promax",
+                        "refText": "hello",
+                        "tokenId": "tokenId"
+                    }
+                }
+            }
+        }
         
-        results = []
+        json_params = json.dumps(params)
         
-        # Test Format 1: Current format
-        test_url_1 = f"https://api.speechsuper.com/?sig={signature}&connect={connect_str}&coreType=sent.eval&refText=hello&audioType=wav"
+        return jsonify({
+            'success': True,
+            'message': 'SpeechSuper format test prepared',
+            'timestamp': timestamp,
+            'connect_sig': connect_sig,
+            'start_sig': start_sig,
+            'json_params_length': len(json_params),
+            'url': f"https://api.speechsuper.com/sent.eval.promax"
+        })
         
-        # Test Format 2: Different parameter order
-        test_url_2 = f"https://api.speechsuper.com/?connect={connect_str}&sig={signature}&coreType=sent.eval&refText=hello&audioType=wav"
-        
-        # Test Format 3: Different coreType
-        test_url_3 = f"https://api.speechsuper.com/?sig={signature}&connect={connect_str}&coreType=word.eval&refText=hello&audioType=wav"
-        
-        # Test Format 4: Different base URL (maybe different endpoint)
-        test_url_4 = f"https://api.speechsuper.com/v1/?sig={signature}&connect={connect_str}&coreType=sent.eval&refText=hello&audioType=wav"
-        
-        test_urls = [
-            ("Current Format", test_url_1),
-            ("Parameter Order", test_url_2), 
-            ("Word Eval", test_url_3),
-            ("V1 Endpoint", test_url_4)
-        ]
-        
-        headers_variants = [
-            {"Request-Index": "0", "Content-Type": "application/octet-stream"},
-            {"Content-Type": "application/octet-stream"},
-            {"Content-Type": "audio/wav"},
-            {"Content-Type": "application/x-www-form-urlencoded"}
-        ]
-        
-        for test_name, url in test_urls:
-            for i, headers in enumerate(headers_variants):
-                try:
-                    print(f"Testing {test_name} with headers variant {i+1}")
-                    print(f"URL: {url}")
-                    print(f"Headers: {headers}")
-                    
-                    response = requests.post(url, data=audio_data, headers=headers, timeout=15)
-                    
-                    result = {
-                        'test_name': f"{test_name} (Headers {i+1})",
-                        'url': url,
-                        'headers': headers,
-                        'status_code': response.status_code,
-                        'response_size': len(response.content),
-                        'content_type': response.headers.get('content-type', 'unknown'),
-                        'response_preview': response.text[:200] if response.text else 'No contentimport os
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500import os
 import json
 import base64
 import hashlib
