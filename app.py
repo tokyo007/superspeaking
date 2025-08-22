@@ -6,6 +6,7 @@ import hmac
 import time
 import requests
 import subprocess
+from urllib.parse import quote_plus
 from flask import Flask, request, jsonify, render_template_string
 from werkzeug.utils import secure_filename
 import tempfile
@@ -123,13 +124,13 @@ class SpeechSuperAPI:
         # Generate signature
         signature = self._generate_signature(timestamp, connect_str)
         
-        # Prepare the request URL with parameters
+        # Prepare the request URL with proper encoding
         params = {
             'sig': signature,
             'connect': connect_str,
             'coreType': core_type,
             'testType': test_type,
-            'questionPrompt': question_prompt,
+            'questionPrompt': quote_plus(question_prompt),
             'model': model,
             'penalizeOfftopic': '1',
             'audioType': 'wav'
@@ -148,12 +149,12 @@ class SpeechSuperAPI:
         # Generate signature
         signature = self._generate_signature(timestamp, connect_str)
         
-        # Prepare the request URL with parameters
+        # Prepare the request URL with proper encoding
         params = {
             'sig': signature,
             'connect': connect_str,
             'coreType': core_type,
-            'questionPrompt': question_prompt,
+            'questionPrompt': quote_plus(question_prompt),
             'audioType': 'wav'
         }
         
@@ -162,20 +163,23 @@ class SpeechSuperAPI:
         return self._send_audio_request(url, audio_file_path)
 
     def _make_assessment_request(self, audio_file_path, core_type, ref_text):
-        """Generic method for scripted assessments"""
+        """Generic method for scripted assessments with proper URL encoding"""
         timestamp = str(int(time.time()))
         connect_str = self.app_key + timestamp
         
         # Generate signature
         signature = self._generate_signature(timestamp, connect_str)
         
-        # Prepare the request
-        url = f"{self.base_url}?sig={signature}&connect={connect_str}&coreType={core_type}&refText={ref_text}&audioType=wav"
+        # Properly encode the reference text
+        encoded_ref_text = quote_plus(ref_text)
+        
+        # Prepare the request URL with proper encoding
+        url = f"{self.base_url}?sig={signature}&connect={connect_str}&coreType={core_type}&refText={encoded_ref_text}&audioType=wav"
         
         return self._send_audio_request(url, audio_file_path)
 
     def _send_audio_request(self, url, audio_file_path):
-        """Send audio file to API with standardization"""
+        """Send audio file to API with standardization and enhanced error handling"""
         # Standardize audio file first
         standardized_path = self._standardize_audio(audio_file_path)
         
@@ -184,6 +188,9 @@ class SpeechSuperAPI:
             with open(standardized_path, 'rb') as audio_file:
                 audio_data = audio_file.read()
             
+            print(f"Sending request to: {url}")
+            print(f"Audio file size: {len(audio_data)} bytes")
+            
             # Prepare headers
             headers = {
                 'Request-Index': '0',
@@ -191,9 +198,33 @@ class SpeechSuperAPI:
             }
             
             response = requests.post(url, data=audio_data, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.json()
             
+            print(f"Response status code: {response.status_code}")
+            print(f"Response headers: {dict(response.headers)}")
+            print(f"Response content length: {len(response.content)}")
+            
+            # Check if response is successful
+            if response.status_code != 200:
+                error_msg = f"API returned status {response.status_code}"
+                if response.text:
+                    error_msg += f": {response.text}"
+                raise Exception(error_msg)
+            
+            # Check if response has content
+            if not response.content:
+                raise Exception("API returned empty response")
+            
+            # Try to parse JSON response
+            try:
+                return response.json()
+            except ValueError as e:
+                print(f"Response text: {response.text[:500]}...")  # First 500 chars
+                raise Exception(f"Invalid JSON response from API. Response starts with: {response.text[:100]}")
+            
+        except requests.exceptions.Timeout:
+            raise Exception("API request timed out (30 seconds)")
+        except requests.exceptions.ConnectionError:
+            raise Exception("Unable to connect to SpeechSuper API")
         except requests.exceptions.RequestException as e:
             raise Exception(f"API request failed: {str(e)}")
         finally:
@@ -224,7 +255,45 @@ def health_check():
         'audio_processing': 'enabled' if ffmpeg_available else 'disabled'
     })
 
-@app.route('/api/check-audio', methods=['POST'])
+@app.route('/api/debug-auth', methods=['GET'])
+def debug_auth():
+    """Debug endpoint to test API authentication without audio"""
+    try:
+        # Check if API keys are set
+        if app.config['SPEECHSUPER_APP_KEY'] == 'your_app_key_here':
+            return jsonify({'error': 'SPEECHSUPER_APP_KEY not configured'}), 400
+        
+        if app.config['SPEECHSUPER_SECRET_KEY'] == 'your_secret_key_here':
+            return jsonify({'error': 'SPEECHSUPER_SECRET_KEY not configured'}), 400
+        
+        # Test basic authentication signature generation
+        timestamp = str(int(time.time()))
+        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp
+        
+        # Generate signature
+        sig_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp + connect_str
+        sig_sha1 = hmac.new(
+            app.config['SPEECHSUPER_SECRET_KEY'].encode('utf-8'),
+            sig_str.encode('utf-8'),
+            hashlib.sha1
+        ).hexdigest()
+        signature = base64.b64encode(sig_sha1.encode('utf-8')).decode('utf-8')
+        
+        # Create a simple test URL (without audio)
+        test_url = f"https://api.speechsuper.com/?sig={signature}&connect={connect_str}&coreType=sent.eval.promax&refText=test&audioType=wav"
+        
+        return jsonify({
+            'success': True,
+            'app_key_length': len(app.config['SPEECHSUPER_APP_KEY']),
+            'secret_key_length': len(app.config['SPEECHSUPER_SECRET_KEY']),
+            'timestamp': timestamp,
+            'signature': signature,
+            'test_url': test_url,
+            'message': 'Authentication parameters generated successfully'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Debug failed: {str(e)}'}), 500
 def check_audio():
     """Endpoint to check and standardize audio format"""
     try:
@@ -609,7 +678,21 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         
-        <!-- Scripted Sentence Assessment -->
+        <!-- Debug Section -->
+        <div class="section" style="background: #fff3cd; border: 2px solid #ffc107;">
+            <h2 style="color: #856404;">🐛 Debug & Troubleshooting</h2>
+            <div class="description">
+                Use these tools to diagnose API connection issues and verify your setup.
+            </div>
+            
+            <div style="margin: 20px 0;">
+                <button onclick="testAuth()" style="background: #ffc107; color: #212529; margin-right: 10px;">Test API Authentication</button>
+                <button onclick="checkHealth()" style="background: #17a2b8; color: white;">Check Health Status</button>
+            </div>
+            
+            <div class="loading" id="loadingDebug" style="color: #856404;">Testing connection...</div>
+            <div id="resultDebug" class="result" style="display: none;"></div>
+        </div>
         <div class="section">
             <h2>1. Scripted Sentence Pronunciation Assessment</h2>
             <div class="core-type">coreType: "sent.eval.promax"</div>
@@ -811,6 +894,67 @@ HTML_TEMPLATE = '''
             resultDiv.className = 'result ' + (isError ? 'error' : 'success');
             resultDiv.innerHTML = content;
             resultDiv.style.display = 'block';
+        }
+
+        // Debug functions
+        async function testAuth() {
+            showLoading('loadingDebug');
+            document.getElementById('resultDebug').style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/debug-auth');
+                const data = await response.json();
+                
+                if (data.success) {
+                    let message = `
+                        <h4>🔑 Authentication Test Results:</h4>
+                        <p><strong>App Key Length:</strong> ${data.app_key_length} characters</p>
+                        <p><strong>Secret Key Length:</strong> ${data.secret_key_length} characters</p>
+                        <p><strong>Timestamp:</strong> ${data.timestamp}</p>
+                        <p><strong>Signature Generated:</strong> ✅ Success</p>
+                        <p><strong>Status:</strong> ${data.message}</p>
+                        <details style="margin-top: 10px;">
+                            <summary>Technical Details (Click to expand)</summary>
+                            <p><strong>Test URL:</strong><br><code style="word-break: break-all; font-size: 12px;">${data.test_url}</code></p>
+                        </details>
+                    `;
+                    showResult('resultDebug', message);
+                } else {
+                    showResult('resultDebug', 'Authentication Error: ' + data.error, true);
+                }
+            } catch (error) {
+                showResult('resultDebug', 'Connection Error: ' + error.message, true);
+            } finally {
+                hideLoading('loadingDebug');
+            }
+        }
+
+        async function checkHealth() {
+            showLoading('loadingDebug');
+            document.getElementById('resultDebug').style.display = 'none';
+            
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                let message = `
+                    <h4>🏥 Health Check Results:</h4>
+                    <p><strong>Status:</strong> ${data.status}</p>
+                    <p><strong>FFmpeg Available:</strong> ${data.ffmpeg_available ? '✅ Yes' : '❌ No'}</p>
+                    <p><strong>Audio Processing:</strong> ${data.audio_processing}</p>
+                    <p><strong>Timestamp:</strong> ${new Date(data.timestamp * 1000).toLocaleString()}</p>
+                `;
+                
+                if (!data.ffmpeg_available) {
+                    message += `<p style="color: orange;"><strong>⚠️ Note:</strong> Audio files will be used in original format without optimization.</p>`;
+                }
+                
+                showResult('resultDebug', message);
+            } catch (error) {
+                showResult('resultDebug', 'Health Check Error: ' + error.message, true);
+            } finally {
+                hideLoading('loadingDebug');
+            }
         }
 
         // Audio check form handler
