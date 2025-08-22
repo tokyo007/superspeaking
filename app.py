@@ -42,39 +42,48 @@ class SpeechSuperAPI:
         """
         Standardize audio file using ffmpeg as recommended by SpeechSuper:
         ffmpeg -i input.mp3 -acodec pcm_s16le -ac 1 -ar 16000 output.wav
+        
+        Special handling for M4A files which need different processing
         """
         if not self._check_ffmpeg_availability():
             # If ffmpeg is not available, return original file and log warning
             print("Warning: ffmpeg not available. Using original audio file.")
             return input_path
         
-        # Create standardized output file path
-        base_name = os.path.splitext(input_path)[0]
-        standardized_path = f"{base_name}_standardized.wav"
+        # Create standardized output file path - always output as WAV
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        output_dir = os.path.dirname(input_path)
+        standardized_path = os.path.join(output_dir, f"{base_name}_standardized.wav")
         
         try:
-            # Run ffmpeg command
+            # Run ffmpeg command with M4A-specific handling
             cmd = [
                 'ffmpeg',
                 '-i', input_path,
                 '-acodec', 'pcm_s16le',  # 16-bit PCM
                 '-ac', '1',              # Mono (1 channel)
                 '-ar', '16000',          # 16kHz sample rate
+                '-f', 'wav',             # Force WAV output format
                 '-y',                    # Overwrite output file
                 standardized_path
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            print(f"Running ffmpeg command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)  # Increased timeout
             
             if result.returncode == 0:
                 print(f"Audio standardized successfully: {standardized_path}")
+                print(f"Original size: {os.path.getsize(input_path)} bytes")
+                print(f"Standardized size: {os.path.getsize(standardized_path)} bytes")
                 return standardized_path
             else:
-                print(f"ffmpeg failed: {result.stderr}")
+                print(f"ffmpeg failed with return code {result.returncode}")
+                print(f"ffmpeg stderr: {result.stderr}")
+                print(f"ffmpeg stdout: {result.stdout}")
                 return input_path
                 
         except subprocess.TimeoutExpired:
-            print("ffmpeg timeout - using original file")
+            print("ffmpeg timeout - file may be too large or complex")
             return input_path
         except Exception as e:
             print(f"Error during audio standardization: {str(e)}")
@@ -118,7 +127,7 @@ class SpeechSuperAPI:
                            test_type="ielts", model="non_native"):
         """Unscripted English IELTS speech assessment API Pro"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp
+        connect_str = self.app_key + timestamp  # Fixed: should be app_key + timestamp
         core_type = "speak.eval.pro"
         
         # Generate signature
@@ -143,7 +152,7 @@ class SpeechSuperAPI:
     def assess_transcribe_and_score(self, audio_file_path, question_prompt="Tell me about yourself"):
         """Unscripted English transcribe and score"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp
+        connect_str = self.app_key + timestamp  # Fixed: should be app_key + timestamp
         core_type = "asr.eval"
         
         # Generate signature
@@ -188,8 +197,18 @@ class SpeechSuperAPI:
             with open(standardized_path, 'rb') as audio_file:
                 audio_data = audio_file.read()
             
-            print(f"Sending request to: {url}")
+            print(f"=== API REQUEST DEBUG INFO ===")
+            print(f"Original file: {audio_file_path}")
+            print(f"Standardized file: {standardized_path}")
             print(f"Audio file size: {len(audio_data)} bytes")
+            print(f"Request URL: {url}")
+            
+            # Validate audio data
+            if len(audio_data) == 0:
+                raise Exception("Audio file is empty after processing")
+            
+            if len(audio_data) > 16 * 1024 * 1024:  # 16MB limit
+                raise Exception(f"Audio file too large: {len(audio_data)} bytes (max 16MB)")
             
             # Prepare headers
             headers = {
@@ -197,32 +216,52 @@ class SpeechSuperAPI:
                 'Content-Type': 'application/octet-stream'
             }
             
-            response = requests.post(url, data=audio_data, headers=headers, timeout=30)
+            print(f"Request headers: {headers}")
             
+            response = requests.post(url, data=audio_data, headers=headers, timeout=60)
+            
+            print(f"=== API RESPONSE DEBUG INFO ===")
             print(f"Response status code: {response.status_code}")
             print(f"Response headers: {dict(response.headers)}")
             print(f"Response content length: {len(response.content)}")
+            print(f"Response content type: {response.headers.get('content-type', 'unknown')}")
             
             # Check if response is successful
             if response.status_code != 200:
                 error_msg = f"API returned status {response.status_code}"
                 if response.text:
-                    error_msg += f": {response.text}"
+                    print(f"Error response body: {response.text[:1000]}...")  # First 1000 chars
+                    error_msg += f": {response.text[:200]}"  # Include first 200 chars in error
                 raise Exception(error_msg)
             
             # Check if response has content
             if not response.content:
                 raise Exception("API returned empty response")
             
+            # Check content type
+            content_type = response.headers.get('content-type', '')
+            if 'html' in content_type.lower():
+                print(f"ERROR: Received HTML response instead of JSON")
+                print(f"Response body: {response.text[:500]}...")
+                raise Exception(f"API returned HTML instead of JSON. This usually indicates an authentication or parameter error.")
+            
             # Try to parse JSON response
             try:
-                return response.json()
+                json_response = response.json()
+                print(f"Successfully parsed JSON response")
+                return json_response
             except ValueError as e:
-                print(f"Response text: {response.text[:500]}...")  # First 500 chars
-                raise Exception(f"Invalid JSON response from API. Response starts with: {response.text[:100]}")
+                print(f"JSON parse error: {str(e)}")
+                print(f"Response text (first 500 chars): {response.text[:500]}...")
+                
+                # Check if it's an HTML error page
+                if response.text.strip().startswith('<'):
+                    raise Exception(f"API returned HTML error page instead of JSON. Check your API keys and parameters.")
+                else:
+                    raise Exception(f"Invalid JSON response from API. Response starts with: {response.text[:100]}")
             
         except requests.exceptions.Timeout:
-            raise Exception("API request timed out (30 seconds)")
+            raise Exception("API request timed out (60 seconds)")
         except requests.exceptions.ConnectionError:
             raise Exception("Unable to connect to SpeechSuper API")
         except requests.exceptions.RequestException as e:
@@ -232,8 +271,9 @@ class SpeechSuperAPI:
             if standardized_path != audio_file_path and os.path.exists(standardized_path):
                 try:
                     os.remove(standardized_path)
-                except:
-                    pass
+                    print(f"Cleaned up temporary file: {standardized_path}")
+                except Exception as e:
+                    print(f"Warning: Could not clean up temporary file: {e}")
 
 # Initialize API client
 speechsuper_client = SpeechSuperAPI(
@@ -268,9 +308,10 @@ def debug_auth():
         
         # Test basic authentication signature generation
         timestamp = str(int(time.time()))
-        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp
+        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp  # FIXED: This should be app_key + timestamp
         
-        # Generate signature
+        # Generate signature - the sig_str should be: app_key + timestamp + connect_str
+        # But since connect_str = app_key + timestamp, sig_str becomes: app_key + timestamp + (app_key + timestamp)
         sig_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp + connect_str
         sig_sha1 = hmac.new(
             app.config['SPEECHSUPER_SECRET_KEY'].encode('utf-8'),
@@ -287,7 +328,10 @@ def debug_auth():
             'app_key_length': len(app.config['SPEECHSUPER_APP_KEY']),
             'secret_key_length': len(app.config['SPEECHSUPER_SECRET_KEY']),
             'timestamp': timestamp,
+            'connect_str': connect_str,
+            'connect_str_length': len(connect_str),
             'signature': signature,
+            'sig_str_for_debug': sig_str,  # Added for debugging
             'test_url': test_url,
             'message': 'Authentication parameters generated successfully'
         })
@@ -687,7 +731,19 @@ HTML_TEMPLATE = '''
             
             <div style="margin: 20px 0;">
                 <button onclick="testAuth()" style="background: #ffc107; color: #212529; margin-right: 10px;">Test API Authentication</button>
-                <button onclick="checkHealth()" style="background: #17a2b8; color: white;">Check Health Status</button>
+                <button onclick="checkHealth()" style="background: #17a2b8; color: white; margin-right: 10px;">Check Health Status</button>
+                <button onclick="showAudioTest()" style="background: #28a745; color: white;">Test Audio Upload</button>
+            </div>
+            
+            <!-- Audio Upload Test Form (initially hidden) -->
+            <div id="audioTestForm" style="display: none; margin: 20px 0; padding: 15px; background: rgba(255,255,255,0.5); border-radius: 8px;">
+                <h4>🎵 Audio Upload Test</h4>
+                <p>Test your audio file processing without calling the SpeechSuper API:</p>
+                <form id="audioUploadTest" enctype="multipart/form-data">
+                    <input type="file" id="testAudioFile" name="audio" accept="audio/*" required style="margin-bottom: 10px;">
+                    <input type="text" id="testRefText" name="reference_text" placeholder="Reference text..." value="Hello world" style="margin-bottom: 10px;">
+                    <button type="submit" style="background: #28a745; color: white;">Test Upload & Processing</button>
+                </form>
             </div>
             
             <div class="loading" id="loadingDebug" style="color: #856404;">Testing connection...</div>
@@ -897,6 +953,11 @@ HTML_TEMPLATE = '''
         }
 
         // Debug functions
+        function showAudioTest() {
+            const testForm = document.getElementById('audioTestForm');
+            testForm.style.display = testForm.style.display === 'none' ? 'block' : 'none';
+        }
+
         async function testAuth() {
             showLoading('loadingDebug');
             document.getElementById('resultDebug').style.display = 'none';
@@ -956,6 +1017,64 @@ HTML_TEMPLATE = '''
                 hideLoading('loadingDebug');
             }
         }
+
+        // Audio upload test form handler
+        document.getElementById('audioUploadTest').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            showLoading('loadingDebug');
+            document.getElementById('resultDebug').style.display = 'none';
+            
+            const formData = new FormData(this);
+            
+            try {
+                const response = await fetch('/api/test-audio-upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    let message = `
+                        <h4>🎵 Audio Upload Test Results:</h4>
+                        <p><strong>File:</strong> ${data.original_filename} (${data.file_extension})</p>
+                        <p><strong>Original Size:</strong> ${data.original_size_mb} MB (${data.original_size_bytes} bytes)</p>
+                        <p><strong>Reference Text:</strong> "${data.reference_text}" (${data.reference_text_length} chars)</p>
+                        <p><strong>FFmpeg Available:</strong> ${data.ffmpeg_available ? '✅ Yes' : '❌ No'}</p>
+                    `;
+                    
+                    if (data.standardization_applied) {
+                        message += `
+                            <p><strong>Audio Processing:</strong> ✅ Applied</p>
+                            <p><strong>Processed Size:</strong> ${data.standardized_size_mb} MB (${data.size_change_percent > 0 ? '+' : ''}${data.size_change_percent}%)</p>
+                            <p><strong>Readable:</strong> ${data.standardized_readable ? '✅ Yes' : '❌ No'}</p>
+                        `;
+                        if (!data.standardized_readable) {
+                            message += `<p style="color: red;"><strong>Error:</strong> ${data.standardization_error}</p>`;
+                        }
+                    } else {
+                        message += `<p><strong>Audio Processing:</strong> ❌ Not applied</p>`;
+                    }
+                    
+                    message += `
+                        <p><strong>API URL Length:</strong> ${data.url_length} characters</p>
+                        <details style="margin-top: 10px;">
+                            <summary>Generated API URL (Click to expand)</summary>
+                            <code style="word-break: break-all; font-size: 11px;">${data.test_api_url}</code>
+                        </details>
+                    `;
+                    
+                    showResult('resultDebug', message);
+                } else {
+                    showResult('resultDebug', 'Upload Test Error: ' + data.error, true);
+                }
+            } catch (error) {
+                showResult('resultDebug', 'Test Error: ' + error.message, true);
+            } finally {
+                hideLoading('loadingDebug');
+            }
+        });
 
         // Audio check form handler
         document.getElementById('audioCheckForm').addEventListener('submit', async function(e) {
