@@ -323,9 +323,389 @@ speechsuper_client = SpeechSuperAPI(
     app.config['SPEECHSUPER_SECRET_KEY']
 )
 
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
+@app.route('/microphone-test')
+def microphone_test():
+    return render_template_string(MICROPHONE_TEST_HTML)
+
+# Add the HTML template
+MICROPHONE_TEST_HTML = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpeechSuper Microphone Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .test-section {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 5px solid #667eea;
+        }
+        .reference-text {
+            background: #e3f2fd;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 1.2em;
+            text-align: center;
+            font-weight: bold;
+            color: #1976d2;
+        }
+        .controls {
+            text-align: center;
+            margin: 30px 0;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .record-btn {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+        }
+        .stop-btn {
+            background: linear-gradient(135deg, #feca57, #ff9ff3);
+        }
+        .test-btn {
+            background: linear-gradient(135deg, #48dbfb, #0abde3);
+        }
+        .status {
+            text-align: center;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status.recording {
+            background: #ffebee;
+            color: #c62828;
+            border: 2px solid #ff5722;
+        }
+        .status.ready {
+            background: #e8f5e8;
+            color: #2e7d32;
+            border: 2px solid #4caf50;
+        }
+        .status.testing {
+            background: #fff3e0;
+            color: #ef6c00;
+            border: 2px solid #ff9800;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            background: #f0f8ff;
+            border-left: 4px solid #2196f3;
+        }
+        .error {
+            background: #ffebee;
+            border-left-color: #f44336;
+            color: #c62828;
+        }
+        .success {
+            background: #e8f5e8;
+            border-left-color: #4caf50;
+            color: #2e7d32;
+        }
+        .debug-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .audio-controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+        audio {
+            width: 100%;
+            max-width: 400px;
+        }
+        .instructions {
+            background: #fffde7;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border: 1px solid #fbc02d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 SpeechSuper Live Test</h1>
+        
+        <div class="instructions">
+            <h3>📋 How to Test:</h3>
+            <ol>
+                <li><strong>Click "Start Recording"</strong> to begin capturing audio</li>
+                <li><strong>Read the sentence aloud</strong> clearly and naturally</li>
+                <li><strong>Click "Stop Recording"</strong> when finished</li>
+                <li><strong>Click "Test with SpeechSuper"</strong> to get your pronunciation score</li>
+            </ol>
+        </div>
+
+        <div class="test-section">
+            <h2>🎯 Scripted Sentence Pronunciation Test</h2>
+            <p><strong>API Endpoint:</strong> <code>sent.eval.promax</code></p>
+            
+            <div class="reference-text">
+                "The successful warrior is the average man with laser-like focus."
+            </div>
+            
+            <div class="controls">
+                <button id="recordBtn" class="record-btn">🎤 Start Recording</button>
+                <button id="stopBtn" class="stop-btn" disabled>⏹️ Stop Recording</button>
+                <button id="testBtn" class="test-btn" disabled>🚀 Test with SpeechSuper</button>
+            </div>
+            
+            <div id="status" class="status">Click "Start Recording" to begin</div>
+            
+            <div class="audio-controls" id="audioControls" style="display: none;">
+                <h4>🔊 Your Recording:</h4>
+                <audio id="audioPlayback" controls></audio>
+            </div>
+            
+            <div id="result" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let recordedBlob;
+
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const testBtn = document.getElementById('testBtn');
+        const status = document.getElementById('status');
+        const result = document.getElementById('result');
+        const audioControls = document.getElementById('audioControls');
+        const audioPlayback = document.getElementById('audioPlayback');
+
+        // Check for microphone support
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            status.innerHTML = '❌ Your browser does not support microphone recording';
+            status.className = 'status error';
+            recordBtn.disabled = true;
+        }
+
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+        testBtn.addEventListener('click', testWithSpeechSuper);
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = event => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    
+                    // Create audio URL for playback
+                    const audioUrl = URL.createObjectURL(recordedBlob);
+                    audioPlayback.src = audioUrl;
+                    audioControls.style.display = 'block';
+                    
+                    status.innerHTML = '✅ Recording complete! You can play it back and then test with SpeechSuper.';
+                    status.className = 'status ready';
+                    testBtn.disabled = false;
+                    
+                    // Stop all tracks to free up microphone
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                testBtn.disabled = true;
+                status.innerHTML = '🔴 Recording... Speak the sentence clearly!';
+                status.className = 'status recording';
+                
+                result.style.display = 'none';
+
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                status.innerHTML = '❌ Error accessing microphone. Please allow microphone access and try again.';
+                status.className = 'status error';
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+            
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+
+        async function testWithSpeechSuper() {
+            if (!recordedBlob) {
+                showResult('No recording available. Please record audio first.', true);
+                return;
+            }
+
+            status.innerHTML = '🧪 Testing with SpeechSuper API...';
+            status.className = 'status testing';
+            testBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                const audioFile = new File([recordedBlob], 'recording.webm', { type: 'audio/webm' });
+                formData.append('audio', audioFile);
+                formData.append('reference_text', 'The successful warrior is the average man with laser-like focus.');
+
+                const response = await fetch('/api/assess-sentence', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                console.log('API Response Status:', response.status);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
+                }
+
+                const data = await response.json();
+                console.log('API Response Data:', data);
+
+                if (data.success) {
+                    let resultHtml = `
+                        <h3>🎉 Assessment Results</h3>
+                        <div class="debug-info">
+                            <strong>Assessment Type:</strong> ${data.assessment_type}<br>
+                            <strong>Reference Text:</strong> "${data.reference_text}"
+                        </div>
+                    `;
+
+                    if (data.assessment && data.assessment.result) {
+                        const result = data.assessment.result;
+                        resultHtml += `
+                            <h4>📊 Scores:</h4>
+                            <ul>
+                                ${result.overall ? `<li><strong>Overall:</strong> ${result.overall}</li>` : ''}
+                                ${result.pronunciation ? `<li><strong>Pronunciation:</strong> ${result.pronunciation}</li>` : ''}
+                                ${result.fluency ? `<li><strong>Fluency:</strong> ${result.fluency}</li>` : ''}
+                                ${result.completeness ? `<li><strong>Completeness:</strong> ${result.completeness}</li>` : ''}
+                                ${result.rhythm ? `<li><strong>Rhythm:</strong> ${result.rhythm}</li>` : ''}
+                            </ul>
+                        `;
+                    }
+
+                    resultHtml += `
+                        <details style="margin-top: 15px;">
+                            <summary>🔍 Full API Response (Click to expand)</summary>
+                            <div class="debug-info">${JSON.stringify(data, null, 2)}</div>
+                        </details>
+                    `;
+
+                    showResult(resultHtml, false);
+                    status.innerHTML = '✅ Test completed successfully!';
+                    status.className = 'status ready';
+                } else {
+                    throw new Error(data.error || 'Unknown API error');
+                }
+
+            } catch (error) {
+                console.error('Test error:', error);
+                let errorMessage = `
+                    <h3>❌ Test Failed</h3>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                    <div class="debug-info">
+                        <strong>Troubleshooting Tips:</strong><br>
+                        • Check that your API keys are set correctly in Render<br>
+                        • Verify your internet connection<br>
+                        • Try recording a shorter, clearer audio clip<br>
+                        • Check browser console for additional errors
+                    </div>
+                `;
+                
+                showResult(errorMessage, true);
+                status.innerHTML = '❌ Test failed. Check the error details below.';
+                status.className = 'status error';
+            } finally {
+                testBtn.disabled = false;
+            }
+        }
+
+        function showResult(content, isError = false) {
+            result.innerHTML = content;
+            result.className = 'result ' + (isError ? 'error' : 'success');
+            result.style.display = 'block';
+        }
+
+        // Initialize
+        status.innerHTML = 'Ready to record. Click "Start Recording" to begin.';
+        status.className = 'status ready';
+    </script>
+</body>
+</html>
+'''
 
 @app.route('/health')
 def health_check():
