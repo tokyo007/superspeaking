@@ -323,6 +323,10 @@ speechsuper_client = SpeechSuperAPI(
     app.config['SPEECHSUPER_SECRET_KEY']
 )
 
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
 @app.route('/microphone-test')
 def microphone_test():
     return render_template_string(MICROPHONE_TEST_HTML)
@@ -408,6 +412,9 @@ MICROPHONE_TEST_HTML = '''
         }
         .test-btn {
             background: linear-gradient(135deg, #48dbfb, #0abde3);
+        }
+        .debug-btn {
+            background: linear-gradient(135deg, #ff6348, #ff4757);
         }
         .status {
             text-align: center;
@@ -501,6 +508,7 @@ MICROPHONE_TEST_HTML = '''
                 <button id="recordBtn" class="record-btn">🎤 Start Recording</button>
                 <button id="stopBtn" class="stop-btn" disabled>⏹️ Stop Recording</button>
                 <button id="testBtn" class="test-btn" disabled>🚀 Test with SpeechSuper</button>
+                <button id="debugBtn" class="debug-btn" onclick="testSpeechSuperDirect()">🔍 Debug SpeechSuper API</button>
             </div>
             
             <div id="status" class="status">Click "Start Recording" to begin</div>
@@ -601,6 +609,96 @@ MICROPHONE_TEST_HTML = '''
             
             recordBtn.disabled = false;
             stopBtn.disabled = true;
+        }
+
+        async function testSpeechSuperDirect() {
+            status.innerHTML = '🔍 Testing SpeechSuper API directly...';
+            status.className = 'status testing';
+
+            try {
+                const response = await fetch('/api/debug-speechsuper', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+                console.log('Debug response:', data);
+
+                if (data.success) {
+                    let resultHtml = `
+                        <h3>🔍 SpeechSuper API Debug Results</h3>
+                        <div class="debug-info">
+                            <strong>URL Length:</strong> ${data.url_length}<br>
+                            <strong>Connect Length:</strong> ${data.connect_length}<br>
+                            <strong>Test Audio Size:</strong> ${data.audio_size} bytes<br>
+                            <strong>Response Status:</strong> ${data.response_status}<br>
+                            <strong>Response Size:</strong> ${data.response_size} bytes<br>
+                            <strong>Empty Response:</strong> ${data.is_empty_response ? '❌ YES' : '✅ NO'}<br>
+                            <strong>JSON Parsed:</strong> ${data.json_parsed ? '✅ YES' : '❌ NO'}
+                        </div>
+                    `;
+
+                    if (data.response_size === 0) {
+                        resultHtml += `
+                            <p style="color: red;"><strong>⚠️ ISSUE FOUND:</strong> SpeechSuper returned completely empty response (0 bytes)</p>
+                            <p><strong>Possible causes:</strong></p>
+                            <ul>
+                                <li>API endpoint URL is incorrect</li>
+                                <li>Authentication signature is invalid</li>
+                                <li>SpeechSuper service is down</li>
+                                <li>Request blocked by firewall/proxy</li>
+                            </ul>
+                        `;
+                    } else if (data.api_response) {
+                        resultHtml += `
+                            <p style="color: green;"><strong>✅ SUCCESS:</strong> Got valid JSON response from SpeechSuper!</p>
+                            <details>
+                                <summary>API Response</summary>
+                                <div class="debug-info">${JSON.stringify(data.api_response, null, 2)}</div>
+                            </details>
+                        `;
+                    } else {
+                        resultHtml += `
+                            <p style="color: orange;"><strong>⚠️ PARTIAL:</strong> Got response but not valid JSON</p>
+                            <details>
+                                <summary>Response Content</summary>
+                                <div class="debug-info">${data.response_preview}</div>
+                            </details>
+                        `;
+                    }
+
+                    resultHtml += `
+                        <details style="margin-top: 15px;">
+                            <summary>🔗 Request Details</summary>
+                            <div class="debug-info">
+                                <strong>URL:</strong> ${data.test_url}<br>
+                                <strong>Response Headers:</strong><br>
+                                ${JSON.stringify(data.response_headers, null, 2)}
+                            </div>
+                        </details>
+                    `;
+
+                    showResult(resultHtml, data.response_size === 0);
+                    
+                    if (data.response_size === 0) {
+                        status.innerHTML = '❌ SpeechSuper API returned empty response';
+                        status.className = 'status error';
+                    } else {
+                        status.innerHTML = '✅ Got response from SpeechSuper API';
+                        status.className = 'status ready';
+                    }
+                } else {
+                    throw new Error(data.error || 'Debug test failed');
+                }
+
+            } catch (error) {
+                console.error('Debug test error:', error);
+                showResult(`
+                    <h3>❌ Debug Test Failed</h3>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                `, true);
+                status.innerHTML = '❌ Debug test failed';
+                status.className = 'status error';
+            }
         }
 
         async function testWithSpeechSuper() {
