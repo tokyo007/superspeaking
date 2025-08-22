@@ -127,8 +127,12 @@ class SpeechSuperAPI:
                            test_type="ielts", model="non_native"):
         """Unscripted English IELTS speech assessment API Pro"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp
+        connect_str = self.app_key + timestamp  # Fixed authentication
         core_type = "speak.eval.pro"
+        
+        print(f"DEBUG IELTS: App key length: {len(self.app_key)}")
+        print(f"DEBUG IELTS: Timestamp: {timestamp}")
+        print(f"DEBUG IELTS: Connect string: {connect_str} (length: {len(connect_str)})")
         
         # Generate signature
         signature = self._generate_signature(timestamp, connect_str)
@@ -147,13 +151,19 @@ class SpeechSuperAPI:
         
         url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
         
+        print(f"DEBUG IELTS: Generated URL: {url}")
+        
         return self._send_audio_request(url, audio_file_path)
 
     def assess_transcribe_and_score(self, audio_file_path, question_prompt="Tell me about yourself"):
         """Unscripted English transcribe and score"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp
+        connect_str = self.app_key + timestamp  # Fixed authentication
         core_type = "asr.eval"
+        
+        print(f"DEBUG ASR: App key length: {len(self.app_key)}")
+        print(f"DEBUG ASR: Timestamp: {timestamp}")
+        print(f"DEBUG ASR: Connect string: {connect_str} (length: {len(connect_str)})")
         
         # Generate signature
         signature = self._generate_signature(timestamp, connect_str)
@@ -168,6 +178,8 @@ class SpeechSuperAPI:
         }
         
         url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
+        
+        print(f"DEBUG ASR: Generated URL: {url}")
         
         return self._send_audio_request(url, audio_file_path)
 
@@ -202,6 +214,7 @@ class SpeechSuperAPI:
             print(f"Standardized file: {standardized_path}")
             print(f"Audio file size: {len(audio_data)} bytes")
             print(f"Request URL: {url}")
+            print(f"URL length: {len(url)}")
             
             # Validate audio data
             if len(audio_data) == 0:
@@ -218,7 +231,8 @@ class SpeechSuperAPI:
             
             print(f"Request headers: {headers}")
             
-            response = requests.post(url, data=audio_data, headers=headers, timeout=60)
+            # Make the API call with extended timeout
+            response = requests.post(url, data=audio_data, headers=headers, timeout=90)
             
             print(f"=== API RESPONSE DEBUG INFO ===")
             print(f"Response status code: {response.status_code}")
@@ -226,46 +240,74 @@ class SpeechSuperAPI:
             print(f"Response content length: {len(response.content)}")
             print(f"Response content type: {response.headers.get('content-type', 'unknown')}")
             
+            # Log the actual response content for debugging
+            if response.content:
+                response_text = response.text
+                print(f"Response text preview (first 500 chars): {response_text[:500]}")
+                
+                # Check if it's HTML
+                if response_text.strip().startswith('<!DOCTYPE') or response_text.strip().startswith('<html'):
+                    print("ERROR: Response is HTML (likely an error page)")
+                    
+                    # Try to extract useful info from HTML error page
+                    if 'error' in response_text.lower() or 'exception' in response_text.lower():
+                        # Extract potential error messages
+                        import re
+                        error_patterns = [
+                            r'<title>(.*?)</title>',
+                            r'<h1>(.*?)</h1>',
+                            r'<error>(.*?)</error>',
+                            r'message["\']?:\s*["\']([^"\']+)["\']'
+                        ]
+                        
+                        for pattern in error_patterns:
+                            matches = re.findall(pattern, response_text, re.IGNORECASE | re.DOTALL)
+                            if matches:
+                                print(f"Extracted error info: {matches[0][:200]}")
+                                break
+                    
+                    raise Exception("API returned HTML error page instead of JSON. This usually indicates authentication failure, invalid parameters, or API endpoint issues.")
+            
             # Check if response is successful
             if response.status_code != 200:
                 error_msg = f"API returned status {response.status_code}"
                 if response.text:
-                    print(f"Error response body: {response.text[:1000]}...")  # First 1000 chars
-                    error_msg += f": {response.text[:200]}"  # Include first 200 chars in error
+                    # Include first part of response in error
+                    error_msg += f". Response: {response.text[:300]}"
                 raise Exception(error_msg)
             
             # Check if response has content
             if not response.content:
-                raise Exception("API returned empty response")
+                raise Exception("API returned empty response (0 bytes)")
             
             # Check content type
-            content_type = response.headers.get('content-type', '')
-            if 'html' in content_type.lower():
-                print(f"ERROR: Received HTML response instead of JSON")
-                print(f"Response body: {response.text[:500]}...")
-                raise Exception(f"API returned HTML instead of JSON. This usually indicates an authentication or parameter error.")
+            content_type = response.headers.get('content-type', '').lower()
+            if 'html' in content_type:
+                raise Exception(f"API returned HTML content type: {content_type}")
             
             # Try to parse JSON response
             try:
                 json_response = response.json()
-                print(f"Successfully parsed JSON response")
+                print(f"Successfully parsed JSON response with keys: {list(json_response.keys()) if isinstance(json_response, dict) else 'Not a dict'}")
                 return json_response
             except ValueError as e:
                 print(f"JSON parse error: {str(e)}")
-                print(f"Response text (first 500 chars): {response.text[:500]}...")
+                print(f"Response text (first 1000 chars): {response.text[:1000]}")
                 
-                # Check if it's an HTML error page
-                if response.text.strip().startswith('<'):
-                    raise Exception(f"API returned HTML error page instead of JSON. Check your API keys and parameters.")
+                # More specific error based on content
+                if not response.text.strip():
+                    raise Exception("API returned completely empty response")
+                elif response.text.strip().startswith('<'):
+                    raise Exception("API returned HTML instead of JSON - likely an authentication or server error")
                 else:
-                    raise Exception(f"Invalid JSON response from API. Response starts with: {response.text[:100]}")
+                    raise Exception(f"API returned non-JSON response. Content starts with: '{response.text[:50]}...'")
             
         except requests.exceptions.Timeout:
-            raise Exception("API request timed out (60 seconds)")
+            raise Exception("API request timed out (90 seconds) - file may be too large or API is slow")
         except requests.exceptions.ConnectionError:
-            raise Exception("Unable to connect to SpeechSuper API")
+            raise Exception("Unable to connect to SpeechSuper API - check internet connection and API endpoint")
         except requests.exceptions.RequestException as e:
-            raise Exception(f"API request failed: {str(e)}")
+            raise Exception(f"Network error during API request: {str(e)}")
         finally:
             # Clean up standardized file if it's different from original
             if standardized_path != audio_file_path and os.path.exists(standardized_path):
@@ -306,14 +348,18 @@ def debug_auth():
         if app.config['SPEECHSUPER_SECRET_KEY'] == 'your_secret_key_here':
             return jsonify({'error': 'SPEECHSUPER_SECRET_KEY not configured'}), 400
         
+        # Debug the actual app key content
+        app_key = app.config['SPEECHSUPER_APP_KEY']
+        secret_key = app.config['SPEECHSUPER_SECRET_KEY']
+        
         # Test basic authentication signature generation
         timestamp = str(int(time.time()))
-        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp
+        connect_str = app_key + timestamp
         
         # Generate signature
-        sig_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp + connect_str
+        sig_str = app_key + timestamp + connect_str
         sig_sha1 = hmac.new(
-            app.config['SPEECHSUPER_SECRET_KEY'].encode('utf-8'),
+            secret_key.encode('utf-8'),
             sig_str.encode('utf-8'),
             hashlib.sha1
         ).hexdigest()
@@ -324,9 +370,15 @@ def debug_auth():
         
         return jsonify({
             'success': True,
-            'app_key_length': len(app.config['SPEECHSUPER_APP_KEY']),
-            'secret_key_length': len(app.config['SPEECHSUPER_SECRET_KEY']),
+            'app_key_preview': app_key[:4] + '...' + app_key[-4:] if len(app_key) > 8 else app_key,  # Show first and last 4 chars
+            'app_key_length': len(app_key),
+            'app_key_is_numeric': app_key.isdigit(),
+            'secret_key_length': len(secret_key),
             'timestamp': timestamp,
+            'timestamp_length': len(timestamp),
+            'connect_str': connect_str,
+            'connect_str_length': len(connect_str),
+            'expected_connect_length': len(app_key) + len(timestamp),
             'signature': signature,
             'test_url': test_url,
             'message': 'Authentication parameters generated successfully'
@@ -728,7 +780,8 @@ HTML_TEMPLATE = '''
             <div style="margin: 20px 0;">
                 <button onclick="testAuth()" style="background: #ffc107; color: #212529; margin-right: 10px;">Test API Authentication</button>
                 <button onclick="checkHealth()" style="background: #17a2b8; color: white; margin-right: 10px;">Check Health Status</button>
-                <button onclick="showAudioTest()" style="background: #28a745; color: white;">Test Audio Upload</button>
+                <button onclick="showAudioTest()" style="background: #28a745; color: white; margin-right: 10px;">Test Audio Upload</button>
+                <button onclick="showSimpleTest()" style="background: #dc3545; color: white;">Simple API Test</button>
             </div>
             
             <!-- Audio Upload Test Form (initially hidden) -->
@@ -739,6 +792,17 @@ HTML_TEMPLATE = '''
                     <input type="file" id="testAudioFile" name="audio" accept="audio/*" required style="margin-bottom: 10px;">
                     <input type="text" id="testRefText" name="reference_text" placeholder="Reference text..." value="Hello world" style="margin-bottom: 10px;">
                     <button type="submit" style="background: #28a745; color: white;">Test Upload & Processing</button>
+                </form>
+            </div>
+            
+            <!-- Simple API Test Form (initially hidden) -->
+            <div id="simpleTestForm" style="display: none; margin: 20px 0; padding: 15px; background: rgba(220,53,69,0.1); border-radius: 8px;">
+                <h4>🚀 Simple API Test</h4>
+                <p>Make a direct API call with minimal parameters to test connectivity:</p>
+                <form id="simpleApiTest" enctype="multipart/form-data">
+                    <input type="file" id="simpleAudioFile" name="audio" accept="audio/*" required style="margin-bottom: 10px;">
+                    <p style="font-size: 12px; color: #666;">This will use basic parameters: coreType=sent.eval, refText=hello</p>
+                    <button type="submit" style="background: #dc3545; color: white;">Test Direct API Call</button>
                 </form>
             </div>
             
@@ -954,6 +1018,11 @@ HTML_TEMPLATE = '''
             testForm.style.display = testForm.style.display === 'none' ? 'block' : 'none';
         }
 
+        function showSimpleTest() {
+            const testForm = document.getElementById('simpleTestForm');
+            testForm.style.display = testForm.style.display === 'none' ? 'block' : 'none';
+        }
+
         async function testAuth() {
             showLoading('loadingDebug');
             document.getElementById('resultDebug').style.display = 'none';
@@ -1014,6 +1083,65 @@ HTML_TEMPLATE = '''
             }
         }
 
+        // Simple API test form handler
+        document.getElementById('simpleApiTest').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            showLoading('loadingDebug');
+            document.getElementById('resultDebug').style.display = 'none';
+            
+            const formData = new FormData(this);
+            
+            try {
+                const response = await fetch('/api/simple-test', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    let message = `
+                        <h4>🚀 Simple API Test Results:</h4>
+                        <p><strong>App Key Preview:</strong> ${data.debug_info.app_key_preview}</p>
+                        <p><strong>App Key Length:</strong> ${data.debug_info.app_key_length}</p>
+                        <p><strong>Connect String:</strong> ${data.debug_info.connect_str}</p>
+                        <p><strong>Connect Length:</strong> ${data.debug_info.connect_length}</p>
+                        <p><strong>Audio Size:</strong> ${data.debug_info.audio_size_bytes} bytes</p>
+                        <p><strong>API Response Status:</strong> ${data.debug_info.response_status}</p>
+                        <p><strong>Response Content Type:</strong> ${data.debug_info.response_content_type}</p>
+                        <p><strong>Response Size:</strong> ${data.debug_info.response_size} bytes</p>
+                    `;
+                    
+                    if (data.api_response) {
+                        message += `
+                            <p style="color: green;"><strong>✅ API Call Successful!</strong></p>
+                            <details>
+                                <summary>API Response (Click to expand)</summary>
+                                <pre>${JSON.stringify(data.api_response, null, 2)}</pre>
+                            </details>
+                        `;
+                    } else if (data.error) {
+                        message += `
+                            <p style="color: red;"><strong>❌ API Error:</strong> ${data.error}</p>
+                            <details>
+                                <summary>Response Text (Click to expand)</summary>
+                                <pre>${data.response_text}</pre>
+                            </details>
+                        `;
+                    }
+                    
+                    showResult('resultDebug', message);
+                } else {
+                    showResult('resultDebug', 'Simple Test Error: ' + data.error, true);
+                }
+            } catch (error) {
+                showResult('resultDebug', 'Test Error: ' + error.message, true);
+            } finally {
+                hideLoading('loadingDebug');
+            }
+        });
+
         // Audio upload test form handler
         document.getElementById('audioUploadTest').addEventListener('submit', async function(e) {
             e.preventDefault();
@@ -1029,6 +1157,12 @@ HTML_TEMPLATE = '''
                     body: formData
                 });
                 
+                console.log('Audio upload test response status:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
                 const data = await response.json();
                 
                 if (data.success) {
@@ -1038,35 +1172,46 @@ HTML_TEMPLATE = '''
                         <p><strong>Original Size:</strong> ${data.original_size_mb} MB (${data.original_size_bytes} bytes)</p>
                         <p><strong>Reference Text:</strong> "${data.reference_text}" (${data.reference_text_length} chars)</p>
                         <p><strong>FFmpeg Available:</strong> ${data.ffmpeg_available ? '✅ Yes' : '❌ No'}</p>
+                        <p><strong>App Key Length:</strong> ${data.app_key_length || 'Unknown'}</p>
+                        <p><strong>Connect Length:</strong> ${data.connect_str_length || 'Unknown'}</p>
                     `;
                     
                     if (data.standardization_applied) {
                         message += `
                             <p><strong>Audio Processing:</strong> ✅ Applied</p>
                             <p><strong>Processed Size:</strong> ${data.standardized_size_mb} MB (${data.size_change_percent > 0 ? '+' : ''}${data.size_change_percent}%)</p>
+                            <p><strong>Format Check:</strong> ${data.standardized_format || 'Unknown'}</p>
                             <p><strong>Readable:</strong> ${data.standardized_readable ? '✅ Yes' : '❌ No'}</p>
                         `;
-                        if (!data.standardized_readable) {
+                        if (!data.standardized_readable && data.standardization_error) {
                             message += `<p style="color: red;"><strong>Error:</strong> ${data.standardization_error}</p>`;
                         }
                     } else {
-                        message += `<p><strong>Audio Processing:</strong> ❌ Not applied</p>`;
+                        message += `<p><strong>Audio Processing:</strong> ❌ Not applied (${data.reason || 'Unknown reason'})</p>`;
+                    }
+                    
+                    if (data.url_warning) {
+                        message += `<p style="color: orange;"><strong>⚠️ Warning:</strong> ${data.url_warning}</p>`;
                     }
                     
                     message += `
                         <p><strong>API URL Length:</strong> ${data.url_length} characters</p>
                         <details style="margin-top: 10px;">
                             <summary>Generated API URL (Click to expand)</summary>
-                            <code style="word-break: break-all; font-size: 11px;">${data.test_api_url}</code>
+                            <code style="word-break: break-all; font-size: 11px;">${data.test_api_url || 'Not generated'}</code>
                         </details>
                     `;
                     
                     showResult('resultDebug', message);
                 } else {
-                    showResult('resultDebug', 'Upload Test Error: ' + data.error, true);
+                    showResult('resultDebug', 'Upload Test Error: ' + (data.error || 'Unknown error'), true);
+                    if (data.traceback) {
+                        console.error('Server traceback:', data.traceback);
+                    }
                 }
             } catch (error) {
-                showResult('resultDebug', 'Test Error: ' + error.message, true);
+                console.error('Audio upload test error:', error);
+                showResult('resultDebug', `Test Error: ${error.message}`, true);
             } finally {
                 hideLoading('loadingDebug');
             }
