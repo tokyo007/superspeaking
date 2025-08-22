@@ -620,16 +620,114 @@ MICROPHONE_TEST_HTML = '''
 
                     if (data.assessment && data.assessment.result) {
                         const result = data.assessment.result;
-                        resultHtml += `
-                            <h4>📊 Scores:</h4>
-                            <ul>
-                                ${result.overall ? `<li><strong>Overall:</strong> ${result.overall}</li>` : ''}
-                                ${result.pronunciation ? `<li><strong>Pronunciation:</strong> ${result.pronunciation}</li>` : ''}
-                                ${result.fluency ? `<li><strong>Fluency:</strong> ${result.fluency}</li>` : ''}
-                                ${result.completeness ? `<li><strong>Completeness:</strong> ${result.completeness}</li>` : ''}
-                                ${result.rhythm ? `<li><strong>Rhythm:</strong> ${result.rhythm}</li>` : ''}
-                            </ul>
-                        `;
+                        
+                        // Overall Scores Section
+                        resultHtml += `<h4>📊 Overall Scores:</h4><ul>`;
+                        if (result.overall) resultHtml += `<li><strong>Overall:</strong> ${result.overall}</li>`;
+                        if (result.pronunciation) resultHtml += `<li><strong>Pronunciation:</strong> ${result.pronunciation}</li>`;
+                        if (result.fluency) resultHtml += `<li><strong>Fluency:</strong> ${result.fluency}</li>`;
+                        if (result.completeness) resultHtml += `<li><strong>Completeness:</strong> ${result.completeness}</li>`;
+                        if (result.rhythm) resultHtml += `<li><strong>Rhythm:</strong> ${result.rhythm}</li>`;
+                        if (result.integrity) resultHtml += `<li><strong>Integrity:</strong> ${result.integrity}</li>`;
+                        resultHtml += `</ul>`;
+
+                        // Recognition/Transcription Section
+                        if (result.recognition || result.transcription) {
+                            resultHtml += `
+                                <h4>🎯 Recognition Result:</h4>
+                                <div style="background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0;">
+                                    <strong>Transcription:</strong> "${result.recognition || result.transcription}"
+                                </div>
+                            `;
+                        }
+
+                        // Audio Metrics Section
+                        resultHtml += `<h4>⏱️ Audio Metrics:</h4><ul>`;
+                        if (result.audioDuration || result.audio_duration) {
+                            const duration = result.audioDuration || result.audio_duration;
+                            resultHtml += `<li><strong>Audio Duration:</strong> ${duration} seconds</li>`;
+                        }
+                        if (result.speechRate || result.speech_rate || result.wordsPerMinute) {
+                            const rate = result.speechRate || result.speech_rate || result.wordsPerMinute;
+                            resultHtml += `<li><strong>Speech Rate:</strong> ${rate} words per minute</li>`;
+                        }
+                        if (result.pauseCount || result.pause_count) {
+                            const pauses = result.pauseCount || result.pause_count;
+                            resultHtml += `<li><strong>Pause Count:</strong> ${pauses}</li>`;
+                        }
+                        if (result.totalWords || result.total_words) {
+                            const words = result.totalWords || result.total_words;
+                            resultHtml += `<li><strong>Total Words:</strong> ${words}</li>`;
+                        }
+                        resultHtml += `</ul>`;
+
+                        // Word Level Scores Section
+                        if (result.words && Array.isArray(result.words) && result.words.length > 0) {
+                            resultHtml += `
+                                <h4>📝 Word-Level Scores:</h4>
+                                <div style="max-height: 200px; overflow-y: auto; background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                                    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                        <thead>
+                                            <tr style="background: #e9ecef;">
+                                                <th style="padding: 5px; border: 1px solid #ddd;">Word</th>
+                                                <th style="padding: 5px; border: 1px solid #ddd;">Score</th>
+                                                <th style="padding: 5px; border: 1px solid #ddd;">Pronunciation</th>
+                                                <th style="padding: 5px; border: 1px solid #ddd;">Stress</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                            `;
+                            
+                            result.words.forEach((word, index) => {
+                                const wordText = word.text || word.word || `Word ${index + 1}`;
+                                const score = word.score || word.pronunciation_score || 'N/A';
+                                const pronunciation = word.pronunciation || word.pronunciation_score || 'N/A';
+                                const stress = word.stress || word.stress_score || 'N/A';
+                                
+                                // Color code based on score
+                                let scoreColor = '#000';
+                                if (typeof score === 'number') {
+                                    if (score >= 80) scoreColor = '#28a745';
+                                    else if (score >= 60) scoreColor = '#ffc107';
+                                    else scoreColor = '#dc3545';
+                                }
+                                
+                                resultHtml += `
+                                    <tr>
+                                        <td style="padding: 5px; border: 1px solid #ddd;">${wordText}</td>
+                                        <td style="padding: 5px; border: 1px solid #ddd; color: ${scoreColor}; font-weight: bold;">${score}</td>
+                                        <td style="padding: 5px; border: 1px solid #ddd;">${pronunciation}</td>
+                                        <td style="padding: 5px; border: 1px solid #ddd;">${stress}</td>
+                                    </tr>
+                                `;
+                            });
+                            
+                            resultHtml += `
+                                        </tbody>
+                                    </table>
+                                </div>
+                            `;
+                        }
+
+                        // Phoneme Level Details (if available)
+                        if (result.phonemes && Array.isArray(result.phonemes) && result.phonemes.length > 0) {
+                            resultHtml += `
+                                <details style="margin-top: 15px;">
+                                    <summary>🔤 Phoneme-Level Analysis (Click to expand)</summary>
+                                    <div style="max-height: 150px; overflow-y: auto; background: #f8f9fa; padding: 10px; border-radius: 5px; font-size: 12px;">
+                            `;
+                            
+                            result.phonemes.forEach((phoneme, index) => {
+                                const phonemeText = phoneme.phoneme || phoneme.text || `Phoneme ${index + 1}`;
+                                const phonemeScore = phoneme.score || 'N/A';
+                                resultHtml += `<span style="margin: 2px; padding: 2px 4px; background: #e9ecef; border-radius: 3px;">${phonemeText}:${phonemeScore}</span> `;
+                            });
+                            
+                            resultHtml += `
+                                    </div>
+                                </details>
+                            `;
+                        }
                     }
 
                     resultHtml += `
