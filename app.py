@@ -1,4 +1,76 @@
-import os
+@app.route('/api/test-speechsuper-formats', methods=['POST'])
+def test_speechsuper_formats():
+    """Test different SpeechSuper API formats based on documentation"""
+    try:
+        app_key = app.config['SPEECHSUPER_APP_KEY']
+        secret_key = app.config['SPEECHSUPER_SECRET_KEY']
+        
+        # Test different authentication formats
+        timestamp = str(int(time.time()))
+        connect_str = app_key + timestamp
+        
+        # Generate signature
+        sig_str = app_key + timestamp + connect_str
+        sig_sha1 = hmac.new(secret_key.encode('utf-8'), sig_str.encode('utf-8'), hashlib.sha1).hexdigest()
+        signature = base64.b64encode(sig_sha1.encode('utf-8')).decode('utf-8')
+        
+        # Create minimal test audio (1 second of silence)
+        import struct
+        sample_rate = 16000
+        num_samples = sample_rate * 1  # 1 second
+        
+        # WAV header for 16kHz, 16-bit, mono
+        wav_header = struct.pack('<4sI4s4sIHHIIHH4sI',
+            b'RIFF', 36 + num_samples * 2, b'WAVE', b'fmt ', 16, 1, 1,
+            sample_rate, sample_rate * 2, 2, 16, b'data', num_samples * 2
+        )
+        audio_data = wav_header + b'\x00' * (num_samples * 2)
+        
+        results = []
+        
+        # Test Format 1: Current format
+        test_url_1 = f"https://api.speechsuper.com/?sig={signature}&connect={connect_str}&coreType=sent.eval&refText=hello&audioType=wav"
+        
+        # Test Format 2: Different parameter order
+        test_url_2 = f"https://api.speechsuper.com/?connect={connect_str}&sig={signature}&coreType=sent.eval&refText=hello&audioType=wav"
+        
+        # Test Format 3: Different coreType
+        test_url_3 = f"https://api.speechsuper.com/?sig={signature}&connect={connect_str}&coreType=word.eval&refText=hello&audioType=wav"
+        
+        # Test Format 4: Different base URL (maybe different endpoint)
+        test_url_4 = f"https://api.speechsuper.com/v1/?sig={signature}&connect={connect_str}&coreType=sent.eval&refText=hello&audioType=wav"
+        
+        test_urls = [
+            ("Current Format", test_url_1),
+            ("Parameter Order", test_url_2), 
+            ("Word Eval", test_url_3),
+            ("V1 Endpoint", test_url_4)
+        ]
+        
+        headers_variants = [
+            {"Request-Index": "0", "Content-Type": "application/octet-stream"},
+            {"Content-Type": "application/octet-stream"},
+            {"Content-Type": "audio/wav"},
+            {"Content-Type": "application/x-www-form-urlencoded"}
+        ]
+        
+        for test_name, url in test_urls:
+            for i, headers in enumerate(headers_variants):
+                try:
+                    print(f"Testing {test_name} with headers variant {i+1}")
+                    print(f"URL: {url}")
+                    print(f"Headers: {headers}")
+                    
+                    response = requests.post(url, data=audio_data, headers=headers, timeout=15)
+                    
+                    result = {
+                        'test_name': f"{test_name} (Headers {i+1})",
+                        'url': url,
+                        'headers': headers,
+                        'status_code': response.status_code,
+                        'response_size': len(response.content),
+                        'content_type': response.headers.get('content-type', 'unknown'),
+                        'response_preview': response.text[:200] if response.text else 'No contentimport os
 import json
 import base64
 import hashlib
@@ -125,63 +197,14 @@ class SpeechSuperAPI:
 
     def assess_ielts_speech(self, audio_file_path, question_prompt="What's your favorite food?", 
                            test_type="ielts", model="non_native"):
-        """Unscripted English IELTS speech assessment API Pro"""
-        timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp  # Fixed authentication
-        core_type = "speak.eval.pro"
-        
-        print(f"DEBUG IELTS: App key length: {len(self.app_key)}")
-        print(f"DEBUG IELTS: Timestamp: {timestamp}")
-        print(f"DEBUG IELTS: Connect string: {connect_str} (length: {len(connect_str)})")
-        
-        # Generate signature
-        signature = self._generate_signature(timestamp, connect_str)
-        
-        # Prepare the request URL with proper encoding
-        params = {
-            'sig': signature,
-            'connect': connect_str,
-            'coreType': core_type,
-            'testType': test_type,
-            'questionPrompt': quote_plus(question_prompt),
-            'model': model,
-            'penalizeOfftopic': '1',
-            'audioType': 'wav'
-        }
-        
-        url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
-        
-        print(f"DEBUG IELTS: Generated URL: {url}")
-        
-        return self._send_audio_request(url, audio_file_path)
+        """Unscripted English IELTS speech assessment - needs different format"""
+        # For now, use a similar approach but this might need different parameters
+        return self._make_speechsuper_request(audio_file_path, "speak.eval.pro", question_prompt)
 
     def assess_transcribe_and_score(self, audio_file_path, question_prompt="Tell me about yourself"):
-        """Unscripted English transcribe and score"""
-        timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp  # Fixed authentication
-        core_type = "asr.eval"
-        
-        print(f"DEBUG ASR: App key length: {len(self.app_key)}")
-        print(f"DEBUG ASR: Timestamp: {timestamp}")
-        print(f"DEBUG ASR: Connect string: {connect_str} (length: {len(connect_str)})")
-        
-        # Generate signature
-        signature = self._generate_signature(timestamp, connect_str)
-        
-        # Prepare the request URL with proper encoding
-        params = {
-            'sig': signature,
-            'connect': connect_str,
-            'coreType': core_type,
-            'questionPrompt': quote_plus(question_prompt),
-            'audioType': 'wav'
-        }
-        
-        url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
-        
-        print(f"DEBUG ASR: Generated URL: {url}")
-        
-        return self._send_audio_request(url, audio_file_path)
+        """Unscripted English transcribe and score - needs different format"""
+        # For now, use a similar approach but this might need different parameters  
+        return self._make_speechsuper_request(audio_file_path, "asr.eval", question_prompt)
 
     def _make_assessment_request(self, audio_file_path, core_type, ref_text):
         """Generic method for scripted assessments with proper URL encoding"""
@@ -616,9 +639,23 @@ MICROPHONE_TEST_HTML = '''
             status.className = 'status testing';
 
             try {
+                console.log('Making request to /api/debug-speechsuper');
+                
                 const response = await fetch('/api/debug-speechsuper', {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
                 });
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.log('Error response text:', errorText);
+                    throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 300)}`);
+                }
 
                 const data = await response.json();
                 console.log('Debug response:', data);
@@ -642,10 +679,10 @@ MICROPHONE_TEST_HTML = '''
                             <p style="color: red;"><strong>⚠️ ISSUE FOUND:</strong> SpeechSuper returned completely empty response (0 bytes)</p>
                             <p><strong>Possible causes:</strong></p>
                             <ul>
-                                <li>API endpoint URL is incorrect</li>
-                                <li>Authentication signature is invalid</li>
-                                <li>SpeechSuper service is down</li>
-                                <li>Request blocked by firewall/proxy</li>
+                                <li>Audio format not accepted by SpeechSuper</li>
+                                <li>API parameters incorrect</li>
+                                <li>SpeechSuper service temporarily down</li>
+                                <li>API rate limits exceeded</li>
                             </ul>
                         `;
                     } else if (data.api_response) {
@@ -692,10 +729,38 @@ MICROPHONE_TEST_HTML = '''
 
             } catch (error) {
                 console.error('Debug test error:', error);
-                showResult(`
-                    <h3>❌ Debug Test Failed</h3>
-                    <p><strong>Error:</strong> ${error.message}</p>
-                `, true);
+                
+                // Check if it's a 404 or 500 error
+                if (error.message.includes('404')) {
+                    showResult(`
+                        <h3>❌ Endpoint Not Found</h3>
+                        <p><strong>Error:</strong> The /api/debug-speechsuper endpoint doesn't exist</p>
+                        <p><strong>Solution:</strong> The latest code hasn't deployed properly. Try:</p>
+                        <ul>
+                            <li>Manual redeploy in Render dashboard</li>
+                            <li>Check build logs for errors</li>
+                            <li>Wait a few more minutes for deployment</li>
+                        </ul>
+                    `, true);
+                } else if (error.message.includes('500')) {
+                    showResult(`
+                        <h3>❌ Server Error</h3>
+                        <p><strong>Error:</strong> Python error in the debug endpoint</p>
+                        <p><strong>Solution:</strong> Check Render logs for Python traceback</p>
+                    `, true);
+                } else {
+                    showResult(`
+                        <h3>❌ Debug Test Failed</h3>
+                        <p><strong>Error:</strong> ${error.message}</p>
+                        <div class="debug-info">
+                            <strong>This suggests:</strong><br>
+                            • Debug endpoint not deployed yet<br>
+                            • Network connectivity issue<br>
+                            • Server returning HTML error page
+                        </div>
+                    `, true);
+                }
+                
                 status.innerHTML = '❌ Debug test failed';
                 status.className = 'status error';
             }
