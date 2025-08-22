@@ -127,7 +127,7 @@ class SpeechSuperAPI:
                            test_type="ielts", model="non_native"):
         """Unscripted English IELTS speech assessment API Pro"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp  # Fixed: should be app_key + timestamp
+        connect_str = self.app_key + timestamp
         core_type = "speak.eval.pro"
         
         # Generate signature
@@ -152,7 +152,7 @@ class SpeechSuperAPI:
     def assess_transcribe_and_score(self, audio_file_path, question_prompt="Tell me about yourself"):
         """Unscripted English transcribe and score"""
         timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp  # Fixed: should be app_key + timestamp
+        connect_str = self.app_key + timestamp
         core_type = "asr.eval"
         
         # Generate signature
@@ -308,10 +308,9 @@ def debug_auth():
         
         # Test basic authentication signature generation
         timestamp = str(int(time.time()))
-        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp  # FIXED: This should be app_key + timestamp
+        connect_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp
         
-        # Generate signature - the sig_str should be: app_key + timestamp + connect_str
-        # But since connect_str = app_key + timestamp, sig_str becomes: app_key + timestamp + (app_key + timestamp)
+        # Generate signature
         sig_str = app.config['SPEECHSUPER_APP_KEY'] + timestamp + connect_str
         sig_sha1 = hmac.new(
             app.config['SPEECHSUPER_SECRET_KEY'].encode('utf-8'),
@@ -328,10 +327,7 @@ def debug_auth():
             'app_key_length': len(app.config['SPEECHSUPER_APP_KEY']),
             'secret_key_length': len(app.config['SPEECHSUPER_SECRET_KEY']),
             'timestamp': timestamp,
-            'connect_str': connect_str,
-            'connect_str_length': len(connect_str),
             'signature': signature,
-            'sig_str_for_debug': sig_str,  # Added for debugging
             'test_url': test_url,
             'message': 'Authentication parameters generated successfully'
         })
