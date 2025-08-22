@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import time
 import requests
+import subprocess
 from flask import Flask, request, jsonify, render_template_string
 from werkzeug.utils import secure_filename
 import tempfile
@@ -28,6 +29,56 @@ class SpeechSuperAPI:
         self.secret_key = secret_key
         self.base_url = "https://api.speechsuper.com/"
 
+    def _check_ffmpeg_availability(self):
+        """Check if ffmpeg is available on the system"""
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    def _standardize_audio(self, input_path):
+        """
+        Standardize audio file using ffmpeg as recommended by SpeechSuper:
+        ffmpeg -i input.mp3 -acodec pcm_s16le -ac 1 -ar 16000 output.wav
+        """
+        if not self._check_ffmpeg_availability():
+            # If ffmpeg is not available, return original file and log warning
+            print("Warning: ffmpeg not available. Using original audio file.")
+            return input_path
+        
+        # Create standardized output file path
+        base_name = os.path.splitext(input_path)[0]
+        standardized_path = f"{base_name}_standardized.wav"
+        
+        try:
+            # Run ffmpeg command
+            cmd = [
+                'ffmpeg',
+                '-i', input_path,
+                '-acodec', 'pcm_s16le',  # 16-bit PCM
+                '-ac', '1',              # Mono (1 channel)
+                '-ar', '16000',          # 16kHz sample rate
+                '-y',                    # Overwrite output file
+                standardized_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                print(f"Audio standardized successfully: {standardized_path}")
+                return standardized_path
+            else:
+                print(f"ffmpeg failed: {result.stderr}")
+                return input_path
+                
+        except subprocess.TimeoutExpired:
+            print("ffmpeg timeout - using original file")
+            return input_path
+        except Exception as e:
+            print(f"Error during audio standardization: {str(e)}")
+            return input_path
+
     def _generate_signature(self, timestamp, connect_str):
         """Generate signature for API authentication"""
         sig_str = self.app_key + timestamp + connect_str
@@ -38,52 +89,33 @@ class SpeechSuperAPI:
         ).hexdigest()
         return base64.b64encode(sig_sha1.encode('utf-8')).decode('utf-8')
 
-    def assess_pronunciation(self, audio_file_path, reference_text, core_type="sent.eval.promax"):
-        """
-        Assess pronunciation using SpeechSuper API
-        
-        Args:
-            audio_file_path: Path to the audio file
-            reference_text: The reference text that should be spoken
-            core_type: Type of assessment (sent.eval.promax for sentence evaluation)
-        """
-        timestamp = str(int(time.time()))
-        connect_str = self.app_key + timestamp
-        
-        # Generate signature
-        signature = self._generate_signature(timestamp, connect_str)
-        
-        # Prepare the request
-        url = f"{self.base_url}?sig={signature}&connect={connect_str}&coreType={core_type}&refText={reference_text}&audioType=wav"
-        
-        # Read audio file
-        with open(audio_file_path, 'rb') as audio_file:
-            audio_data = audio_file.read()
-        
-        # Prepare headers
-        headers = {
-            'Request-Index': '0',
-            'Content-Type': 'application/octet-stream'
-        }
-        
-        try:
-            response = requests.post(url, data=audio_data, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"API request failed: {str(e)}")
+    def assess_scripted_sentence(self, audio_file_path, reference_text):
+        """Scripted English sentence pronunciation assessment"""
+        return self._make_assessment_request(
+            audio_file_path=audio_file_path,
+            core_type="sent.eval.promax",
+            ref_text=reference_text
+        )
 
-    def assess_spontaneous_speech(self, audio_file_path, question_prompt="What's your favorite food?", 
-                                 test_type="ielts", model="non_native"):
-        """
-        Assess spontaneous speech using SpeechSuper API
-        
-        Args:
-            audio_file_path: Path to the audio file
-            question_prompt: The question that was asked
-            test_type: Type of test (ielts, pte, etc.)
-            model: Transcription model (non_native or native)
-        """
+    def assess_scripted_paragraph(self, audio_file_path, reference_text):
+        """Scripted English paragraph pronunciation assessment"""
+        return self._make_assessment_request(
+            audio_file_path=audio_file_path,
+            core_type="para.eval",
+            ref_text=reference_text
+        )
+
+    def assess_pte_speech(self, audio_file_path, reference_text):
+        """Semi-scripted English PTE speech assessment"""
+        return self._make_assessment_request(
+            audio_file_path=audio_file_path,
+            core_type="pte.eval",
+            ref_text=reference_text
+        )
+
+    def assess_ielts_speech(self, audio_file_path, question_prompt="What's your favorite food?", 
+                           test_type="ielts", model="non_native"):
+        """Unscripted English IELTS speech assessment API Pro"""
         timestamp = str(int(time.time()))
         connect_str = self.app_key + timestamp
         core_type = "speak.eval.pro"
@@ -105,22 +137,72 @@ class SpeechSuperAPI:
         
         url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
         
-        # Read audio file
-        with open(audio_file_path, 'rb') as audio_file:
-            audio_data = audio_file.read()
+        return self._send_audio_request(url, audio_file_path)
+
+    def assess_transcribe_and_score(self, audio_file_path, question_prompt="Tell me about yourself"):
+        """Unscripted English transcribe and score"""
+        timestamp = str(int(time.time()))
+        connect_str = self.app_key + timestamp
+        core_type = "asr.eval"
         
-        # Prepare headers
-        headers = {
-            'Request-Index': '0',
-            'Content-Type': 'application/octet-stream'
+        # Generate signature
+        signature = self._generate_signature(timestamp, connect_str)
+        
+        # Prepare the request URL with parameters
+        params = {
+            'sig': signature,
+            'connect': connect_str,
+            'coreType': core_type,
+            'questionPrompt': question_prompt,
+            'audioType': 'wav'
         }
         
+        url = f"{self.base_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
+        
+        return self._send_audio_request(url, audio_file_path)
+
+    def _make_assessment_request(self, audio_file_path, core_type, ref_text):
+        """Generic method for scripted assessments"""
+        timestamp = str(int(time.time()))
+        connect_str = self.app_key + timestamp
+        
+        # Generate signature
+        signature = self._generate_signature(timestamp, connect_str)
+        
+        # Prepare the request
+        url = f"{self.base_url}?sig={signature}&connect={connect_str}&coreType={core_type}&refText={ref_text}&audioType=wav"
+        
+        return self._send_audio_request(url, audio_file_path)
+
+    def _send_audio_request(self, url, audio_file_path):
+        """Send audio file to API with standardization"""
+        # Standardize audio file first
+        standardized_path = self._standardize_audio(audio_file_path)
+        
         try:
+            # Read standardized audio file
+            with open(standardized_path, 'rb') as audio_file:
+                audio_data = audio_file.read()
+            
+            # Prepare headers
+            headers = {
+                'Request-Index': '0',
+                'Content-Type': 'application/octet-stream'
+            }
+            
             response = requests.post(url, data=audio_data, headers=headers, timeout=30)
             response.raise_for_status()
             return response.json()
+            
         except requests.exceptions.RequestException as e:
             raise Exception(f"API request failed: {str(e)}")
+        finally:
+            # Clean up standardized file if it's different from original
+            if standardized_path != audio_file_path and os.path.exists(standardized_path):
+                try:
+                    os.remove(standardized_path)
+                except:
+                    pass
 
 # Initialize API client
 speechsuper_client = SpeechSuperAPI(
@@ -134,13 +216,18 @@ def index():
 
 @app.route('/health')
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': time.time()})
+    ffmpeg_available = speechsuper_client._check_ffmpeg_availability()
+    return jsonify({
+        'status': 'healthy', 
+        'timestamp': time.time(),
+        'ffmpeg_available': ffmpeg_available,
+        'audio_processing': 'enabled' if ffmpeg_available else 'disabled'
+    })
 
-@app.route('/api/assess-pronunciation', methods=['POST'])
-def assess_pronunciation():
-    """Endpoint for scripted pronunciation assessment"""
+@app.route('/api/check-audio', methods=['POST'])
+def check_audio():
+    """Endpoint to check and standardize audio format"""
     try:
-        # Check if audio file is present
         if 'audio' not in request.files:
             return jsonify({'error': 'No audio file provided'}), 400
         
@@ -148,44 +235,48 @@ def assess_pronunciation():
         if audio_file.filename == '':
             return jsonify({'error': 'No audio file selected'}), 400
         
-        # Get reference text
-        reference_text = request.form.get('reference_text')
-        if not reference_text:
-            return jsonify({'error': 'Reference text is required'}), 400
-        
-        # Get optional parameters
-        core_type = request.form.get('core_type', 'sent.eval.promax')
-        
-        # Save uploaded file temporarily
         filename = secure_filename(audio_file.filename)
         temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         audio_file.save(temp_path)
         
         try:
-            # Call SpeechSuper API
-            result = speechsuper_client.assess_pronunciation(
-                temp_path, reference_text, core_type
-            )
+            # Check original file info
+            original_size = os.path.getsize(temp_path)
             
-            return jsonify({
+            # Try to standardize
+            standardized_path = speechsuper_client._standardize_audio(temp_path)
+            
+            result = {
                 'success': True,
-                'assessment': result,
-                'reference_text': reference_text
-            })
+                'original_file': filename,
+                'original_size_mb': round(original_size / (1024*1024), 2),
+                'ffmpeg_available': speechsuper_client._check_ffmpeg_availability()
+            }
+            
+            if standardized_path != temp_path:
+                standardized_size = os.path.getsize(standardized_path)
+                result['standardized'] = True
+                result['standardized_size_mb'] = round(standardized_size / (1024*1024), 2)
+                result['size_change'] = round(((standardized_size - original_size) / original_size) * 100, 1)
+                # Clean up standardized file
+                os.remove(standardized_path)
+            else:
+                result['standardized'] = False
+                result['message'] = 'No standardization applied (ffmpeg not available or file already optimal)'
+            
+            return jsonify(result)
             
         finally:
-            # Clean up temporary file
             if os.path.exists(temp_path):
                 os.remove(temp_path)
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/assess-spontaneous', methods=['POST'])
-def assess_spontaneous():
-    """Endpoint for spontaneous speech assessment"""
+@app.route('/api/assess-sentence', methods=['POST'])
+def assess_sentence():
+    """Endpoint for scripted sentence pronunciation assessment"""
     try:
-        # Check if audio file is present
         if 'audio' not in request.files:
             return jsonify({'error': 'No audio file provided'}), 400
         
@@ -193,31 +284,158 @@ def assess_spontaneous():
         if audio_file.filename == '':
             return jsonify({'error': 'No audio file selected'}), 400
         
-        # Get optional parameters
-        question_prompt = request.form.get('question_prompt', "What's your favorite food?")
-        test_type = request.form.get('test_type', 'ielts')
-        model = request.form.get('model', 'non_native')
+        reference_text = request.form.get('reference_text')
+        if not reference_text:
+            return jsonify({'error': 'Reference text is required'}), 400
         
-        # Save uploaded file temporarily
         filename = secure_filename(audio_file.filename)
         temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         audio_file.save(temp_path)
         
         try:
-            # Call SpeechSuper API
-            result = speechsuper_client.assess_spontaneous_speech(
-                temp_path, question_prompt, test_type, model
-            )
-            
+            result = speechsuper_client.assess_scripted_sentence(temp_path, reference_text)
             return jsonify({
                 'success': True,
+                'assessment_type': 'Scripted Sentence (sent.eval.promax)',
+                'assessment': result,
+                'reference_text': reference_text
+            })
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/assess-paragraph', methods=['POST'])
+def assess_paragraph():
+    """Endpoint for scripted paragraph pronunciation assessment"""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'No audio file selected'}), 400
+        
+        reference_text = request.form.get('reference_text')
+        if not reference_text:
+            return jsonify({'error': 'Reference text is required'}), 400
+        
+        filename = secure_filename(audio_file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        audio_file.save(temp_path)
+        
+        try:
+            result = speechsuper_client.assess_scripted_paragraph(temp_path, reference_text)
+            return jsonify({
+                'success': True,
+                'assessment_type': 'Scripted Paragraph (para.eval)',
+                'assessment': result,
+                'reference_text': reference_text
+            })
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/assess-pte', methods=['POST'])
+def assess_pte():
+    """Endpoint for semi-scripted PTE speech assessment"""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'No audio file selected'}), 400
+        
+        reference_text = request.form.get('reference_text')
+        if not reference_text:
+            return jsonify({'error': 'Reference text is required'}), 400
+        
+        filename = secure_filename(audio_file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        audio_file.save(temp_path)
+        
+        try:
+            result = speechsuper_client.assess_pte_speech(temp_path, reference_text)
+            return jsonify({
+                'success': True,
+                'assessment_type': 'Semi-scripted PTE (pte.eval)',
+                'assessment': result,
+                'reference_text': reference_text
+            })
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/assess-ielts', methods=['POST'])
+def assess_ielts():
+    """Endpoint for unscripted IELTS speech assessment"""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'No audio file selected'}), 400
+        
+        question_prompt = request.form.get('question_prompt', "What's your favorite food?")
+        test_type = request.form.get('test_type', 'ielts')
+        model = request.form.get('model', 'non_native')
+        
+        filename = secure_filename(audio_file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        audio_file.save(temp_path)
+        
+        try:
+            result = speechsuper_client.assess_ielts_speech(temp_path, question_prompt, test_type, model)
+            return jsonify({
+                'success': True,
+                'assessment_type': 'Unscripted IELTS (speak.eval.pro)',
                 'assessment': result,
                 'question_prompt': question_prompt,
                 'test_type': test_type
             })
-            
         finally:
-            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/assess-transcribe', methods=['POST'])
+def assess_transcribe():
+    """Endpoint for unscripted transcribe and score assessment"""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'No audio file selected'}), 400
+        
+        question_prompt = request.form.get('question_prompt', "Tell me about yourself")
+        
+        filename = secure_filename(audio_file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        audio_file.save(temp_path)
+        
+        try:
+            result = speechsuper_client.assess_transcribe_and_score(temp_path, question_prompt)
+            return jsonify({
+                'success': True,
+                'assessment_type': 'Transcribe and Score (asr.eval)',
+                'assessment': result,
+                'question_prompt': question_prompt
+            })
+        finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
     
@@ -231,11 +449,11 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pronunciation Assessment MVP</title>
+    <title>SpeechSuper Assessment MVP - All Core Types</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
             background-color: #f5f5f5;
@@ -249,12 +467,29 @@ HTML_TEMPLATE = '''
         h1 {
             color: #333;
             text-align: center;
+            margin-bottom: 30px;
         }
         .section {
             margin: 30px 0;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
+            padding: 25px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+        .section h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        .core-type {
+            background: #e8f4fd;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-weight: bold;
+            margin-bottom: 15px;
+            display: inline-block;
         }
         .form-group {
             margin: 15px 0;
@@ -263,110 +498,302 @@ HTML_TEMPLATE = '''
             display: block;
             margin-bottom: 5px;
             font-weight: bold;
+            color: #34495e;
         }
         input, textarea, select {
             width: 100%;
-            padding: 8px;
+            padding: 10px;
             border: 1px solid #ddd;
             border-radius: 4px;
             box-sizing: border-box;
+            font-size: 14px;
+        }
+        textarea {
+            min-height: 80px;
+            resize: vertical;
         }
         button {
-            background-color: #007bff;
+            background: linear-gradient(135deg, #3498db, #2980b9);
             color: white;
-            padding: 10px 20px;
+            padding: 12px 24px;
             border: none;
-            border-radius: 4px;
+            border-radius: 5px;
             cursor: pointer;
             font-size: 16px;
+            font-weight: bold;
+            transition: all 0.3s ease;
         }
         button:hover {
-            background-color: #0056b3;
+            background: linear-gradient(135deg, #2980b9, #1f4e79);
+            transform: translateY(-1px);
         }
         .result {
             margin-top: 20px;
             padding: 15px;
             border-radius: 4px;
             background-color: #f8f9fa;
+            border-left: 4px solid #28a745;
         }
         .error {
             background-color: #f8d7da;
             color: #721c24;
+            border-left-color: #dc3545;
         }
         .success {
             background-color: #d4edda;
             color: #155724;
+            border-left-color: #28a745;
         }
         .loading {
             display: none;
             text-align: center;
             padding: 20px;
+            color: #3498db;
+        }
+        .sample-text {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+        .description {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 15px;
+            line-height: 1.4;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Pronunciation Assessment MVP</h1>
+        <h1>🎯 SpeechSuper Assessment MVP - All Core Types</h1>
         
+        <!-- Audio Format Guidance -->
+        <div class="section" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+            <h2 style="color: white; border-bottom: 2px solid white;">📊 Audio Format Requirements</h2>
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; margin: 15px 0;">
+                <h3 style="margin-top: 0; color: #fff;">SpeechSuper Recommended Format:</h3>
+                <div style="font-family: monospace; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; margin: 10px 0;">
+                    <strong>ffmpeg -i input.mp3 -acodec pcm_s16le -ac 1 -ar 16000 output.wav</strong>
+                </div>
+                <ul style="margin: 10px 0; line-height: 1.6;">
+                    <li><strong>Format:</strong> WAV with PCM encoding</li>
+                    <li><strong>Sample Rate:</strong> 16kHz (16000 Hz)</li>
+                    <li><strong>Channels:</strong> Mono (1 channel)</li>
+                    <li><strong>Bit Depth:</strong> 16-bit</li>
+                    <li><strong>Supported Formats:</strong> WAV, MP3, OPUS, OGG, AMR</li>
+                </ul>
+            </div>
+            
+            <!-- Audio Check Tool -->
+            <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px;">
+                <h3 style="margin-top: 0; color: #fff;">🔧 Audio Format Checker</h3>
+                <p style="margin-bottom: 15px;">Upload a file to check its format and see if automatic standardization is available:</p>
+                <form id="audioCheckForm" enctype="multipart/form-data" style="margin-bottom: 15px;">
+                    <input type="file" id="audioCheckFile" name="audio" accept="audio/*" required 
+                           style="margin-bottom: 10px; padding: 8px; border-radius: 4px; border: none;">
+                    <button type="submit" style="background: #fff; color: #667eea; margin-left: 10px;">Check Audio Format</button>
+                </form>
+                <div class="loading" id="loadingCheck" style="color: #fff;">Checking audio format...</div>
+                <div id="resultCheck" class="result" style="display: none; background: rgba(255,255,255,0.9); color: #333;"></div>
+            </div>
+        </div>
+        
+        <!-- Scripted Sentence Assessment -->
         <div class="section">
-            <h2>Scripted Pronunciation Assessment</h2>
-            <form id="pronunciationForm" enctype="multipart/form-data">
+            <h2>1. Scripted Sentence Pronunciation Assessment</h2>
+            <div class="core-type">coreType: "sent.eval.promax"</div>
+            <div class="description">
+                Comprehensive pronunciation assessment at phoneme, syllable, word, and sentence levels with advanced features like stress analysis and mispronunciation detection.
+            </div>
+            <form id="sentenceForm" enctype="multipart/form-data">
                 <div class="form-group">
                     <label for="audioFile1">Audio File (WAV, MP3, etc.):</label>
                     <input type="file" id="audioFile1" name="audio" accept="audio/*" required>
                 </div>
                 <div class="form-group">
-                    <label for="referenceText">Reference Text:</label>
-                    <textarea id="referenceText" name="reference_text" rows="3" 
-                              placeholder="Enter the text that should be spoken..." required>The successful warrior is the average man with laser-like focus.</textarea>
+                    <label for="referenceText1">Reference Text:</label>
+                    <div class="sample-text">Sample: "The successful warrior is the average man with laser-like focus."</div>
+                    <textarea id="referenceText1" name="reference_text" rows="3" 
+                              placeholder="Enter the sentence that should be spoken..." required>The successful warrior is the average man with laser-like focus.</textarea>
                 </div>
-                <div class="form-group">
-                    <label for="coreType1">Assessment Type:</label>
-                    <select id="coreType1" name="core_type">
-                        <option value="sent.eval.promax">Sentence Evaluation (Pro Max)</option>
-                        <option value="sent.eval">Sentence Evaluation (Basic)</option>
-                    </select>
-                </div>
-                <button type="submit">Assess Pronunciation</button>
+                <button type="submit">Assess Sentence Pronunciation</button>
             </form>
-            <div class="loading" id="loading1">Analyzing pronunciation...</div>
+            <div class="loading" id="loading1">Analyzing sentence pronunciation...</div>
             <div id="result1" class="result" style="display: none;"></div>
         </div>
-        
+
+        <!-- Scripted Paragraph Assessment -->
         <div class="section">
-            <h2>Spontaneous Speech Assessment</h2>
-            <form id="spontaneousForm" enctype="multipart/form-data">
+            <h2>2. Scripted Paragraph Pronunciation Assessment</h2>
+            <div class="core-type">coreType: "para.eval"</div>
+            <div class="description">
+                Pronunciation assessment for longer passages, providing comprehensive analysis of rhythm, fluency, and pronunciation across multiple sentences.
+            </div>
+            <form id="paragraphForm" enctype="multipart/form-data">
                 <div class="form-group">
                     <label for="audioFile2">Audio File (WAV, MP3, etc.):</label>
                     <input type="file" id="audioFile2" name="audio" accept="audio/*" required>
                 </div>
                 <div class="form-group">
-                    <label for="questionPrompt">Question Prompt:</label>
-                    <textarea id="questionPrompt" name="question_prompt" rows="2" 
-                              placeholder="Enter the question that was asked...">What's your favorite food?</textarea>
+                    <label for="referenceText2">Reference Paragraph:</label>
+                    <div class="sample-text">Sample paragraph about communication and technology</div>
+                    <textarea id="referenceText2" name="reference_text" rows="5" 
+                              placeholder="Enter the paragraph that should be spoken..." required>In today's digital age, effective communication has become more important than ever before. Technology has revolutionized the way we connect with others, allowing us to share ideas and collaborate across vast distances. However, with these advancements come new challenges. We must learn to navigate the complexities of digital communication while maintaining the human touch that makes our interactions meaningful and authentic.</textarea>
+                </div>
+                <button type="submit">Assess Paragraph Pronunciation</button>
+            </form>
+            <div class="loading" id="loading2">Analyzing paragraph pronunciation...</div>
+            <div id="result2" class="result" style="display: none;"></div>
+        </div>
+
+        <!-- Semi-scripted PTE Assessment -->
+        <div class="section">
+            <h2>3. Semi-scripted PTE Speech Assessment</h2>
+            <div class="core-type">coreType: "pte.eval"</div>
+            <div class="description">
+                PTE Academic-style assessment for tasks like "Read Aloud" where content is provided but delivery is evaluated for fluency and pronunciation.
+            </div>
+            <form id="pteForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="audioFile3">Audio File (WAV, MP3, etc.):</label>
+                    <input type="file" id="audioFile3" name="audio" accept="audio/*" required>
                 </div>
                 <div class="form-group">
-                    <label for="testType">Test Type:</label>
-                    <select id="testType" name="test_type">
+                    <label for="referenceText3">PTE Reference Text:</label>
+                    <div class="sample-text">Sample PTE Academic passage about environmental science</div>
+                    <textarea id="referenceText3" name="reference_text" rows="4" 
+                              placeholder="Enter the PTE passage that should be read aloud..." required>Climate change represents one of the most significant challenges facing humanity in the twenty-first century. Rising global temperatures, melting ice caps, and extreme weather patterns are clear indicators of our planet's changing climate. Scientists worldwide agree that immediate action is required to reduce greenhouse gas emissions and transition to sustainable energy sources.</textarea>
+                </div>
+                <button type="submit">Assess PTE Speech</button>
+            </form>
+            <div class="loading" id="loading3">Analyzing PTE speech assessment...</div>
+            <div id="result3" class="result" style="display: none;"></div>
+        </div>
+
+        <!-- Unscripted IELTS Assessment -->
+        <div class="section">
+            <h2>4. Unscripted IELTS Speech Assessment Pro</h2>
+            <div class="core-type">coreType: "speak.eval.pro"</div>
+            <div class="description">
+                Comprehensive assessment of spontaneous speech including pronunciation, fluency, grammar, vocabulary, and content relevance with IELTS scoring.
+            </div>
+            <form id="ieltsForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="audioFile4">Audio File (WAV, MP3, etc.):</label>
+                    <input type="file" id="audioFile4" name="audio" accept="audio/*" required>
+                </div>
+                <div class="form-group">
+                    <label for="questionPrompt1">IELTS Question Prompt:</label>
+                    <div class="sample-text">Sample IELTS Speaking questions</div>
+                    <select id="questionPromptSelect" onchange="updateQuestionPrompt()">
+                        <option value="custom">Custom Question</option>
+                        <option value="food">What's your favorite food and why?</option>
+                        <option value="travel">Describe a place you would like to visit and explain why.</option>
+                        <option value="technology">How has technology changed the way people communicate?</option>
+                        <option value="education">What do you think is the most important subject to study and why?</option>
+                        <option value="environment">What can individuals do to help protect the environment?</option>
+                    </select>
+                    <textarea id="questionPrompt1" name="question_prompt" rows="3" 
+                              placeholder="Enter the IELTS question prompt...">What's your favorite food and why?</textarea>
+                </div>
+                <div class="form-group">
+                    <label for="testType1">Test Type:</label>
+                    <select id="testType1" name="test_type">
                         <option value="ielts">IELTS</option>
                         <option value="pte">PTE</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="model">Speaker Model:</label>
-                    <select id="model" name="model">
+                    <label for="model1">Speaker Model:</label>
+                    <select id="model1" name="model">
                         <option value="non_native">Non-Native Speaker</option>
                         <option value="native">Native Speaker</option>
                     </select>
                 </div>
-                <button type="submit">Assess Speech</button>
+                <button type="submit">Assess IELTS Speech</button>
             </form>
-            <div class="loading" id="loading2">Analyzing speech...</div>
-            <div id="result2" class="result" style="display: none;"></div>
+            <div class="loading" id="loading4">Analyzing IELTS speech assessment...</div>
+            <div id="result4" class="result" style="display: none;"></div>
+        </div>
+
+        <!-- Transcribe and Score Assessment -->
+        <div class="section">
+            <h2>5. Unscripted Transcribe and Score Assessment</h2>
+            <div class="core-type">coreType: "asr.eval"</div>
+            <div class="description">
+                Automatic speech recognition with pronunciation scoring. Transcribes speech and provides pronunciation feedback without requiring reference text.
+            </div>
+            <form id="transcribeForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="audioFile5">Audio File (WAV, MP3, etc.):</label>
+                    <input type="file" id="audioFile5" name="audio" accept="audio/*" required>
+                </div>
+                <div class="form-group">
+                    <label for="questionPrompt2">Question Context (Optional):</label>
+                    <div class="sample-text">Sample open-ended questions for natural speech</div>
+                    <select id="transcribePromptSelect" onchange="updateTranscribePrompt()">
+                        <option value="custom">Custom Question</option>
+                        <option value="yourself">Tell me about yourself</option>
+                        <option value="day">Describe your typical day</option>
+                        <option value="hobbies">What are your hobbies and interests?</option>
+                        <option value="goals">What are your goals for the future?</option>
+                        <option value="experience">Describe a memorable experience you've had</option>
+                    </select>
+                    <textarea id="questionPrompt2" name="question_prompt" rows="2" 
+                              placeholder="Enter the question context (optional)...">Tell me about yourself</textarea>
+                </div>
+                <button type="submit">Transcribe and Score Speech</button>
+            </form>
+            <div class="loading" id="loading5">Transcribing and scoring speech...</div>
+            <div id="result5" class="result" style="display: none;"></div>
         </div>
     </div>
 
     <script>
+        // Sample question prompts
+        const questionPrompts = {
+            food: "What's your favorite food and why?",
+            travel: "Describe a place you would like to visit and explain why.",
+            technology: "How has technology changed the way people communicate?",
+            education: "What do you think is the most important subject to study and why?",
+            environment: "What can individuals do to help protect the environment?"
+        };
+
+        const transcribePrompts = {
+            yourself: "Tell me about yourself",
+            day: "Describe your typical day",
+            hobbies: "What are your hobbies and interests?",
+            goals: "What are your goals for the future?",
+            experience: "Describe a memorable experience you've had"
+        };
+
+        function updateQuestionPrompt() {
+            const select = document.getElementById('questionPromptSelect');
+            const textarea = document.getElementById('questionPrompt1');
+            if (select.value !== 'custom') {
+                textarea.value = questionPrompts[select.value];
+            }
+        }
+
+        function updateTranscribePrompt() {
+            const select = document.getElementById('transcribePromptSelect');
+            const textarea = document.getElementById('questionPrompt2');
+            if (select.value !== 'custom') {
+                textarea.value = transcribePrompts[select.value];
+            }
+        }
+
         function formatResult(data) {
             return '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
         }
@@ -386,16 +813,17 @@ HTML_TEMPLATE = '''
             resultDiv.style.display = 'block';
         }
 
-        document.getElementById('pronunciationForm').addEventListener('submit', async function(e) {
+        // Audio check form handler
+        document.getElementById('audioCheckForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            showLoading('loading1');
-            document.getElementById('result1').style.display = 'none';
+            showLoading('loadingCheck');
+            document.getElementById('resultCheck').style.display = 'none';
             
             const formData = new FormData(this);
             
             try {
-                const response = await fetch('/api/assess-pronunciation', {
+                const response = await fetch('/api/check-audio', {
                     method: 'POST',
                     body: formData
                 });
@@ -403,27 +831,69 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 
                 if (data.success) {
-                    showResult('result1', formatResult(data));
+                    let message = `
+                        <h4>Audio Check Results:</h4>
+                        <p><strong>File:</strong> ${data.original_file}</p>
+                        <p><strong>Size:</strong> ${data.original_size_mb} MB</p>
+                        <p><strong>FFmpeg Available:</strong> ${data.ffmpeg_available ? '✅ Yes' : '❌ No'}</p>
+                    `;
+                    
+                    if (data.standardized) {
+                        message += `
+                            <p><strong>Standardization:</strong> ✅ Applied</p>
+                            <p><strong>New Size:</strong> ${data.standardized_size_mb} MB (${data.size_change > 0 ? '+' : ''}${data.size_change}%)</p>
+                            <p style="color: green;">Your audio will be automatically optimized for better API results!</p>
+                        `;
+                    } else {
+                        message += `
+                            <p><strong>Standardization:</strong> ${data.message}</p>
+                            ${!data.ffmpeg_available ? '<p style="color: orange;">⚠️ FFmpeg not available - audio will be used as-is</p>' : ''}
+                        `;
+                    }
+                    
+                    showResult('resultCheck', message);
                 } else {
-                    showResult('result1', 'Error: ' + data.error, true);
+                    showResult('resultCheck', 'Error: ' + data.error, true);
                 }
             } catch (error) {
-                showResult('result1', 'Error: ' + error.message, true);
+                showResult('resultCheck', 'Error: ' + error.message, true);
             } finally {
-                hideLoading('loading1');
+                hideLoading('loadingCheck');
             }
+        });
+        document.getElementById('sentenceForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await handleFormSubmission(this, '/api/assess-sentence', 'loading1', 'result1');
         });
 
-        document.getElementById('spontaneousForm').addEventListener('submit', async function(e) {
+        document.getElementById('paragraphForm').addEventListener('submit', async function(e) {
             e.preventDefault();
+            await handleFormSubmission(this, '/api/assess-paragraph', 'loading2', 'result2');
+        });
+
+        document.getElementById('pteForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await handleFormSubmission(this, '/api/assess-pte', 'loading3', 'result3');
+        });
+
+        document.getElementById('ieltsForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await handleFormSubmission(this, '/api/assess-ielts', 'loading4', 'result4');
+        });
+
+        document.getElementById('transcribeForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await handleFormSubmission(this, '/api/assess-transcribe', 'loading5', 'result5');
+        });
+
+        async function handleFormSubmission(form, endpoint, loadingId, resultId) {
+            showLoading(loadingId);
+            document.getElementById(resultId).style.display = 'none';
             
-            showLoading('loading2');
-            document.getElementById('result2').style.display = 'none';
-            
-            const formData = new FormData(this);
+            const formData = new FormData(form);
             
             try {
-                const response = await fetch('/api/assess-spontaneous', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     body: formData
                 });
@@ -431,16 +901,16 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 
                 if (data.success) {
-                    showResult('result2', formatResult(data));
+                    showResult(resultId, formatResult(data));
                 } else {
-                    showResult('result2', 'Error: ' + data.error, true);
+                    showResult(resultId, 'Error: ' + data.error, true);
                 }
             } catch (error) {
-                showResult('result2', 'Error: ' + error.message, true);
+                showResult(resultId, 'Error: ' + error.message, true);
             } finally {
-                hideLoading('loading2');
+                hideLoading(loadingId);
             }
-        });
+        }
     </script>
 </body>
 </html>
